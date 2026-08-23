@@ -11,13 +11,16 @@
 #if defined(__HIPCC__) || defined(__HIP_PLATFORM_AMD__)
   #include <hip/hip_runtime.h>
   #include <hipblas/hipblas.h>
+  #include <hiprand/hiprand_kernel.h>
 #else
   #include <cuda_runtime.h>
   #include <cublas_v2.h>
+  #include <curand_kernel.h>
 
   #define hipMalloc               cudaMalloc
   #define hipFree                 cudaFree
   #define hipMemcpy               cudaMemcpy
+  #define hipMemset               cudaMemset
   #define hipMemcpyHostToDevice   cudaMemcpyHostToDevice
   #define hipMemcpyDeviceToHost   cudaMemcpyDeviceToHost
   #define hipDeviceReset          cudaDeviceReset
@@ -30,6 +33,11 @@
   #define HIPBLAS_OP_N            CUBLAS_OP_N
   #define HIPBLAS_OP_T            CUBLAS_OP_T
   #define HIPBLAS_OP_C            CUBLAS_OP_C
+
+  #define hiprandState_t          curandState_t
+  #define hiprand_init            curand_init
+  #define hiprand_uniform_double  curand_uniform_double
+  #define hiprand_normal_double   curand_normal_double
 #endif
 
 #include <cstddef>
@@ -56,9 +64,23 @@ struct Problem {
   double *C       = nullptr; int ldc = 0;
 
   int num_moduli = 2;      // Ozaki II
-  int num_splits = 3;      // Ozaki I
+  int num_splits = 2;      // Ozaki I
   bool fastmode  = false;  // Ozaki II
 };
+
+// Fills n device doubles: randn when phi < 0, else (rand - 0.5) * exp(randn * phi).
+// Larger phi widens the exponent range and makes the emulated gemm harder.
+void fill_random(double *x, size_t n, double phi, unsigned long long seed);
+
+// ||x - y|| / ||x||, both device pointers, so the result is dimensionless.
+double error_norm(const double *x, const double *y, size_t n);
+
+// Worst single element of |x - y| / |x|, falling back to |x - y| where x is zero.
+double max_error(const double *x, const double *y, size_t n);
+
+// Host pointers, column-major, lda = m, ldb = k, ldc = m. Accumulates every dot
+// product in FP128, so the result is the yardstick both gemms are measured against.
+void gemm_fp128(int m, int n, int k, const double *A, const double *B, double *C);
 
 const char *method_name(Method method);
 
