@@ -89,6 +89,13 @@ double max_error(const double *x, const double *y, size_t n) {
   return out;
 }
 
+// __float128 is an x86-only GCC extension; on AArch64 long double is IEEE binary128.
+#if defined(__aarch64__)
+using fp128_t = long double;
+#else
+using fp128_t = __float128;
+#endif
+
 void gemm_fp128(int m, int n, int k, const double *A, const double *B, double *C) {
   // Row-major copy of A so both operands are walked contiguously below.
   std::vector<double> At(size_t(m) * k);
@@ -101,9 +108,9 @@ void gemm_fp128(int m, int n, int k, const double *A, const double *B, double *C
       const double *a = &At[size_t(i) * k];
       const double *b = &B[size_t(j) * k];
 
-      __float128 sum = 0;
+      fp128_t sum = 0;
       for (int l = 0; l < k; ++l)
-        sum += static_cast<__float128>(a[l]) * static_cast<__float128>(b[l]);
+        sum += static_cast<fp128_t>(a[l]) * static_cast<fp128_t>(b[l]);
 
       C[size_t(j) * m + i] = static_cast<double>(sum);
     }

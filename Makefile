@@ -14,6 +14,9 @@ HAVE_OZABLAS ?= 0
 HAVE_CUBLAS_OZAKI1 ?= 0
 
 
+# `clean` just deletes files, so skip toolchain detection and its hard errors.
+ifneq ($(MAKECMDGOALS),clean)
+
 #===============
 # Auto-detect backend (CUDA or HIP)
 #===============
@@ -52,7 +55,7 @@ export LD_LIBRARY_PATH := $(CUDA_PATH)/lib64:$(LD_LIBRARY_PATH)
 
 COMPILER := nvcc
 LIBS := -lcublas -lcublasLt -lcurand -lcudart -lcuda -lnvidia-ml -ldl -lgomp
-FLAGS := -std=c++20 -O3 
+FLAGS := -ccbin g++-14 -std=c++20 -O3 
 FLAGS += -x cu
 # nvcc does not take -fopenmp itself; it has to reach the host compiler.
 FLAGS += -Xcompiler -fopenmp
@@ -114,6 +117,8 @@ endif
 ifeq ($(HAVE_CUBLAS_OZAKI1),1)
 FLAGS += -DHAVE_CUBLAS_OZAKI1
 endif
+
+endif # MAKECMDGOALS != clean
 
 
 #===============
