@@ -4,6 +4,13 @@
   #include <gemmul8.hpp>
 #endif
 
+#if defined(HAVE_OZABLAS)
+  #include <ozablas/ozablas.hpp>
+  #include <ozablas/core/executor.hpp>
+  #include <ozablas/core/workspace.hpp>
+  #include <memory>
+#endif
+
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -176,42 +183,61 @@ bool method_available(Method method) {
   }
 }
 
-size_t gemm_run(Method method, hipblasHandle_t handle, const Problem &p, void *work) {
+void gemm_run(Method method, hipblasHandle_t handle, const Problem &p) {
   switch (method) {
 
     case Method::Reference: {
-      if (work == nullptr) return 0;
       hipblasDgemm(handle, p.transa, p.transb, p.m, p.n, p.k,
                    &p.alpha, p.A, p.lda, p.B, p.ldb, &p.beta, p.C, p.ldc);
-      return 0;
+      return;
     }
 
 #if defined(HAVE_CUBLAS_OZAKI1) && !defined(__HIP_PLATFORM_AMD__)
     case Method::CublasOzaki1: {
       // TODO: split A and B into exactly representable slices, accumulate the
       // pairwise cublasDgemm products, then sum in decreasing magnitude order.
-      return 0;
+      return;
     }
 #endif
 
 #if defined(HAVE_OZABLAS)
     case Method::OzablasOzaki1:
     case Method::OzablasOzaki2: {
-      // TODO: create the ozablas handle, set the split count (Ozaki I) or the
-      // modulus count and fastmode (Ozaki II), then call its Dgemm.
-      return 0;
+  #if defined(__HIPCC__) || defined(__HIP_PLATFORM_AMD__)
+      std::shared_ptr<const ozablas::Executor> exec =
+          std::make_shared<ozablas::HipExecutor>(0);
+  #else
+      std::shared_ptr<const ozablas::Executor> exec =
+          std::make_shared<ozablas::CudaExecutor>(0);
+  #endif
+
+      // ozablas is row-major and only does C = A * B, so the column-major
+      // problem is handed over as C^T = B^T * A^T with the operands swapped.
+      if (method == Method::OzablasOzaki1) {
+        ozablas::WorkspaceScheme1 ws(exec, p.n, p.m, p.k, p.num_splits);
+        ozablas::ozaki_scheme1_gemm(ws, p.B, p.A, p.C);
+      } else {
+        ozablas::WorkspaceScheme2 ws(exec, p.n, p.m, p.k, p.num_moduli);
+        ozablas::ozaki_scheme2_gemm(ws, p.B, p.A, p.C);
+      }
+
+      exec->synchronize();
+      return;
     }
 #endif
 
 #if defined(HAVE_GEMMUL8)
     case Method::Gemmul8: {
-      // GEMMul8 uses the same call for both phases: a null workspace makes it
-      // report the required sizes instead of multiplying.
-      std::vector<double> res = gemmul8::gemm<gemmul8::Backend::INT8>(
+      void *work = nullptr;
+      hipMalloc(&work, gemmul8::workSize(p.m, p.n, p.k, p.num_moduli));
+
+      gemmul8::gemm<gemmul8::Backend::INT8>(
           handle, p.transa, p.transb, p.m, p.n, p.k,
           &p.alpha, p.A, p.lda, p.B, p.ldb, &p.beta, p.C, p.ldc,
           p.num_moduli, p.fastmode, work);
-      return work == nullptr ? size_t(res[0]) : 0;
+
+      hipFree(work);
+      return;
     }
 #endif
 

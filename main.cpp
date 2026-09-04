@@ -14,6 +14,7 @@ int main(int argc, char **argv) try {
   p.m = 1024; p.n = 1024; p.k = 1024;
   double phi = 1.0;
   p.num_moduli = 2;
+  p.num_splits = 2;
 
   for (int i = 1; i < argc; ++i) {
     if (strncmp(argv[i], "--method=", 9) == 0) {
@@ -25,6 +26,7 @@ int main(int argc, char **argv) try {
     else if (strncmp(argv[i], "--k=", 4) == 0) p.k = atoi(argv[i] + 4);
     else if (strncmp(argv[i], "--phi=", 6) == 0) phi = atof(argv[i] + 6);
     else if (strncmp(argv[i], "--moduli=", 9) == 0) p.num_moduli = atoi(argv[i] + 9);
+    else if (strncmp(argv[i], "--splits=", 9) == 0) p.num_splits = atoi(argv[i] + 9);
     else throw std::invalid_argument(std::string("unknown option '") + argv[i] + "'");
   }
 
@@ -62,7 +64,7 @@ int main(int argc, char **argv) try {
 
   p.A = A; p.B = B; p.C = C_native;
 
-  gemm_run(Method::Reference, handle, p, reinterpret_cast<void *>(1));
+  gemm_run(Method::Reference, handle, p);
 
   p.C = C;
 
@@ -70,11 +72,7 @@ int main(int argc, char **argv) try {
     throw std::invalid_argument(std::string("method '") + method_name(method) +
                                 "' is not compiled into this binary");
 
-  void *work = nullptr;
-  const size_t lwork = gemm_run(method, handle, p, nullptr);
-  if (lwork > 0) hipMalloc(&work, lwork);
-
-  gemm_run(method, handle, p, work != nullptr ? work : reinterpret_cast<void *>(1));
+  gemm_run(method, handle, p);
 
   printf("method   = %s\n", method_name(method));
   printf("m,n,k    = %d,%d,%d\n", p.m, p.n, p.k);
@@ -86,8 +84,6 @@ int main(int argc, char **argv) try {
                                 max_error(C_exact, C, len_c));
   printf("diff     = %e  %e\n", error_norm(C_native, C, len_c),
                                 max_error(C_native, C, len_c));
-
-  if (work != nullptr) hipFree(work);
 
   hipFree(C_exact);
   hipFree(C_native);

@@ -90,6 +90,5 @@ Method method_from_name(const std::string &name);
 // False when the library was not compiled in or the GPU is the wrong vendor.
 bool method_available(Method method);
 
-// work == nullptr: return the required workspace in bytes, compute nothing.
-// otherwise:       compute C and return 0.
-size_t gemm_run(Method method, hipblasHandle_t handle, const Problem &p, void *work);
+// Computes C. Any scratch memory the method needs is allocated and freed inside.
+void gemm_run(Method method, hipblasHandle_t handle, const Problem &p);

@@ -18,6 +18,7 @@ The remaining options describe the problem being solved:
 | `--k=<int>` | 1024 | Inner dimension, i.e. columns of A and rows of B. |
 | `--phi=<double>` | 1.0 | Controls the entries of A and B. |
 | `--moduli=<int>` | 2 | Number of moduli used by the Ozaki II methods. |
+| `--splits=<int>` | 2 | Number of splits used by the Ozaki I methods. |
 
 `--phi` sets how the random input matrices are generated. A negative value draws every entry from a standard normal distribution. A non-negative value uses `(rand - 0.5) * exp(randn * phi)` instead, so the exponent range of the entries widens as `phi` grows and the emulation has a harder time matching FP64. The seed is fixed in the code, so repeated runs with the same options give the same matrices.
 
