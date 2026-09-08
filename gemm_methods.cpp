@@ -124,6 +124,53 @@ void gemm_ref(int m, int n, int k, const double *A, const double *B, double *C) 
   }
 }
 
+namespace {
+
+// The _rn intrinsics are used throughout so no compiler can contract or reorder
+// these away; the error-free transforms below are only exact as written.
+
+// Knuth's TwoSum
+__device__ void two_sum(double a, double b, double &s, double &e) {
+  s = __dadd_rn(a, b);
+  const double bb = __dsub_rn(s, a);
+  e = __dadd_rn(__dsub_rn(a, __dsub_rn(s, bb)), __dsub_rn(b, bb));
+}
+
+__device__ void two_prod(double a, double b, double &p, double &e) {
+  p = __dmul_rn(a, b);
+  e = __fma_rn(a, b, -p);
+}
+
+__global__ void gemm_ref_kernel(int m, int n, int k, const double *A, const double *B,
+                                double *C) {
+  const int i = blockIdx.x * blockDim.x + threadIdx.x;
+  const int j = blockIdx.y * blockDim.y + threadIdx.y;
+  if (i >= m || j >= n) return;
+
+  // (hi, lo) is an unevaluated double-double, so the dot product carries ~106
+  // mantissa bits against the 113 the host __float128 path has.
+  double hi = 0.0, lo = 0.0;
+
+  for (int l = 0; l < k; ++l) {
+    double p, pe;
+    two_prod(A[size_t(l) * m + i], B[size_t(j) * k + l], p, pe);
+
+    double se;
+    two_sum(hi, p, hi, se);
+    lo = __dadd_rn(lo, __dadd_rn(se, pe));
+  }
+
+  C[size_t(j) * m + i] = __dadd_rn(hi, lo);
+}
+
+}  // namespace
+
+void gemm_ref_gpu(int m, int n, int k, const double *A, const double *B, double *C) {
+  const dim3 block(16, 16);
+  const dim3 grid((m + block.x - 1) / block.x, (n + block.y - 1) / block.y);
+  gemm_ref_kernel<<<grid, block>>>(m, n, k, A, B, C);
+}
+
 const char *method_name(Method method) {
   switch (method) {
     case Method::Native:        return "native";

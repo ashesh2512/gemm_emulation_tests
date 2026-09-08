@@ -33,6 +33,7 @@ float time_gemm(Method method, hipblasHandle_t handle, const Problem &p) {
 int main(int argc, char **argv) try {
   bool method_given = false;
   Method method     = Method::Native;
+  bool verify_ref   = false;
 
   Problem p;
   p.m = 1024; p.n = 1024; p.k = 1024;
@@ -51,6 +52,7 @@ int main(int argc, char **argv) try {
     else if (strncmp(argv[i], "--phi=", 6) == 0) phi = atof(argv[i] + 6);
     else if (strncmp(argv[i], "--moduli=", 9) == 0) p.num_moduli = atoi(argv[i] + 9);
     else if (strncmp(argv[i], "--splits=", 9) == 0) p.num_splits = atoi(argv[i] + 9);
+    else if (strcmp(argv[i], "--verify-ref") == 0) verify_ref = true;
     else throw std::invalid_argument(std::string("unknown option '") + argv[i] + "'");
   }
 
@@ -80,13 +82,25 @@ int main(int argc, char **argv) try {
   fill_random(A, len_a, phi, 7774);
   fill_random(B, len_b, phi, 4777);
 
-  // The host reference needs the operands back on the CPU side.
-  std::vector<double> hA(len_a), hB(len_b), hC(len_c);
-  hipMemcpy(hA.data(), A, len_a * sizeof(double), hipMemcpyDeviceToHost);
-  hipMemcpy(hB.data(), B, len_b * sizeof(double), hipMemcpyDeviceToHost);
+  gemm_ref_gpu(p.m, p.n, p.k, A, B, C_exact);
 
-  gemm_ref(p.m, p.n, p.k, hA.data(), hB.data(), hC.data());
-  hipMemcpy(C_exact, hC.data(), len_c * sizeof(double), hipMemcpyHostToDevice);
+  // Off by default: the host reference costs two transfers plus an FP128 gemm.
+  double verify_norm = 0.0, verify_max = 0.0;
+  if (verify_ref) {
+    std::vector<double> hA(len_a), hB(len_b), hC(len_c);
+    hipMemcpy(hA.data(), A, len_a * sizeof(double), hipMemcpyDeviceToHost);
+    hipMemcpy(hB.data(), B, len_b * sizeof(double), hipMemcpyDeviceToHost);
+
+    gemm_ref(p.m, p.n, p.k, hA.data(), hB.data(), hC.data());
+
+    double *C_exact_cpu;
+    hipMalloc(reinterpret_cast<void **>(&C_exact_cpu), len_c * sizeof(double));
+    hipMemcpy(C_exact_cpu, hC.data(), len_c * sizeof(double), hipMemcpyHostToDevice);
+
+    verify_norm = error_norm(C_exact_cpu, C_exact, len_c);
+    verify_max  = max_error(C_exact_cpu, C_exact, len_c);
+    hipFree(C_exact_cpu);
+  }
 
   p.A = A; p.B = B; p.C = C_native;
 
@@ -117,6 +131,8 @@ int main(int argc, char **argv) try {
                                 max_error(C_exact, C, len_c));
   printf("diff     = %e  %e\n", error_norm(C_native, C, len_c),
                                 max_error(C_native, C, len_c));
+  // Both references are exact to well under an FP64 ulp, so this should be ~1e-16.
+  if (verify_ref) printf("ref-diff = %e  %e\n", verify_norm, verify_max);
 
   hipFree(C_exact);
   hipFree(C_native);

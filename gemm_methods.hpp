@@ -89,6 +89,10 @@ double max_error(const double *x, const double *y, size_t n);
 // product in FP128, so the result is the yardstick both gemms are measured against.
 void gemm_ref(int m, int n, int k, const double *A, const double *B, double *C);
 
+// Same problem and layout as gemm_ref, but device pointers and double-double
+// accumulation (~106 mantissa bits). This is the reference every run uses.
+void gemm_ref_gpu(int m, int n, int k, const double *A, const double *B, double *C);
+
 const char *method_name(Method method);
 
 // Throws std::invalid_argument listing the accepted names when there is no match.
