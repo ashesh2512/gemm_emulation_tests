@@ -25,6 +25,13 @@
   #define hipMemcpyDeviceToHost   cudaMemcpyDeviceToHost
   #define hipDeviceReset          cudaDeviceReset
 
+  #define hipEvent_t              cudaEvent_t
+  #define hipEventCreate          cudaEventCreate
+  #define hipEventRecord          cudaEventRecord
+  #define hipEventSynchronize     cudaEventSynchronize
+  #define hipEventElapsedTime     cudaEventElapsedTime
+  #define hipEventDestroy         cudaEventDestroy
+
   #define hipblasHandle_t         cublasHandle_t
   #define hipblasOperation_t      cublasOperation_t
   #define hipblasCreate           cublasCreate
@@ -44,7 +51,7 @@
 #include <string>
 
 enum class Method {
-  Reference,      // native FP64 dgemm, also the baseline for the error norm
+  Native,         // native FP64 dgemm, also the baseline for the error norm
   CublasOzaki1,   // Ozaki I built directly on cuBLAS   (NVIDIA only)
   OzablasOzaki1,  // Ozaki I via ozablas
   OzablasOzaki2,  // Ozaki II via ozablas
@@ -80,7 +87,7 @@ double max_error(const double *x, const double *y, size_t n);
 
 // Host pointers, column-major, lda = m, ldb = k, ldc = m. Accumulates every dot
 // product in FP128, so the result is the yardstick both gemms are measured against.
-void gemm_fp128(int m, int n, int k, const double *A, const double *B, double *C);
+void gemm_ref(int m, int n, int k, const double *A, const double *B, double *C);
 
 const char *method_name(Method method);
 
@@ -89,6 +96,13 @@ Method method_from_name(const std::string &name);
 
 // False when the library was not compiled in or the GPU is the wrong vendor.
 bool method_available(Method method);
+
+// Opens or shuts the cuBLAS FP64 emulation gate. cuBLAS latches this at library
+// init, so it must run before any other cuBLAS call and cannot be changed after.
+void set_fp64_emulation_gate(bool enabled);
+
+// Mantissa bits the last gemm_run() retained, or -1 when it was not emulated.
+int emulation_mantissa_bits();
 
 // Computes C. Any scratch memory the method needs is allocated and freed inside.
 void gemm_run(Method method, hipblasHandle_t handle, const Problem &p);

@@ -103,7 +103,7 @@ using fp128_t = long double;
 using fp128_t = __float128;
 #endif
 
-void gemm_fp128(int m, int n, int k, const double *A, const double *B, double *C) {
+void gemm_ref(int m, int n, int k, const double *A, const double *B, double *C) {
   // Row-major copy of A so both operands are walked contiguously below.
   std::vector<double> At(size_t(m) * k);
   for (int j = 0; j < k; ++j)
@@ -126,7 +126,7 @@ void gemm_fp128(int m, int n, int k, const double *A, const double *B, double *C
 
 const char *method_name(Method method) {
   switch (method) {
-    case Method::Reference:     return "reference";
+    case Method::Native:        return "native";
     case Method::CublasOzaki1:  return "cublas-ozaki1";
     case Method::OzablasOzaki1: return "ozablas-ozaki1";
     case Method::OzablasOzaki2: return "ozablas-ozaki2";
@@ -152,7 +152,7 @@ Method method_from_name(const std::string &name) {
 
 bool method_available(Method method) {
   switch (method) {
-    case Method::Reference:
+    case Method::Native:
       return true;
 
     case Method::CublasOzaki1:
@@ -183,10 +183,62 @@ bool method_available(Method method) {
   }
 }
 
+#if defined(HAVE_CUBLAS_OZAKI1) && !defined(__HIP_PLATFORM_AMD__)
+namespace {
+
+int *d_mantissa_bits = nullptr;
+
+// mantissa_bits <= 0 selects the strategy under which cuBLAS declines to emulate on
+// FP64-strong parts; there is no API that disables emulation outright.
+void set_fp64_emulation(cublasHandle_t handle, int mantissa_bits) {
+  const bool off = mantissa_bits <= 0;
+
+  if (d_mantissa_bits == nullptr)
+    cudaMalloc(reinterpret_cast<void **>(&d_mantissa_bits), sizeof(int));
+  cudaMemset(d_mantissa_bits, 0xFF, sizeof(int));
+  cublasSetFixedPointEmulationMantissaBitCountPointer(handle, d_mantissa_bits);
+
+  cublasSetEmulationStrategy(handle, off ? CUBLAS_EMULATION_STRATEGY_DEFAULT
+                                         : CUBLAS_EMULATION_STRATEGY_EAGER);
+
+  if (off) {
+    cublasSetFixedPointEmulationMantissaControl(
+        handle, CUDA_EMULATION_MANTISSA_CONTROL_DYNAMIC);
+  } else {
+    cublasSetFixedPointEmulationMantissaControl(
+        handle, CUDA_EMULATION_MANTISSA_CONTROL_FIXED);
+    cublasSetFixedPointEmulationMaxMantissaBitCount(handle, mantissa_bits);
+  }
+}
+
+}  // namespace
+#endif
+
+void set_fp64_emulation_gate(bool enabled) {
+#if defined(HAVE_CUBLAS_OZAKI1) && !defined(__HIP_PLATFORM_AMD__)
+  setenv("CUBLAS_EMULATE_DOUBLE_PRECISION", enabled ? "1" : "0", 1);
+#endif
+}
+
+int emulation_mantissa_bits() {
+#if defined(HAVE_CUBLAS_OZAKI1) && !defined(__HIP_PLATFORM_AMD__)
+  if (d_mantissa_bits == nullptr) return -1;
+
+  int bits = -1;
+  cudaMemcpy(&bits, d_mantissa_bits, sizeof(int), cudaMemcpyDeviceToHost);
+  return bits;
+#else
+  return -1;
+#endif
+}
+
 void gemm_run(Method method, hipblasHandle_t handle, const Problem &p) {
   switch (method) {
 
-    case Method::Reference: {
+    case Method::Native: {
+#if defined(HAVE_CUBLAS_OZAKI1) && !defined(__HIP_PLATFORM_AMD__)
+      set_fp64_emulation(handle, 0);
+#endif
       hipblasDgemm(handle, p.transa, p.transb, p.m, p.n, p.k,
                    &p.alpha, p.A, p.lda, p.B, p.ldb, &p.beta, p.C, p.ldc);
       return;
@@ -194,8 +246,14 @@ void gemm_run(Method method, hipblasHandle_t handle, const Problem &p) {
 
 #if defined(HAVE_CUBLAS_OZAKI1) && !defined(__HIP_PLATFORM_AMD__)
     case Method::CublasOzaki1: {
-      // TODO: split A and B into exactly representable slices, accumulate the
-      // pairwise cublasDgemm products, then sum in decreasing magnitude order.
+      // sliceCount = ceildiv(mantissaBitCount + 1, 8), so this pins num_splits slices.
+      set_fp64_emulation(handle, 8 * p.num_splits - 1);
+
+      cublasGemmEx(handle, p.transa, p.transb, p.m, p.n, p.k,
+                   &p.alpha, p.A, CUDA_R_64F, p.lda,
+                             p.B, CUDA_R_64F, p.ldb,
+                   &p.beta,  p.C, CUDA_R_64F, p.ldc,
+                   CUBLAS_COMPUTE_64F, CUBLAS_GEMM_DEFAULT);
       return;
     }
 #endif

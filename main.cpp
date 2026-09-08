@@ -6,9 +6,33 @@
 #include <stdexcept>
 #include <vector>
 
+namespace {
+
+// The first call pays for lazy module loading, so only the second one is timed.
+float time_gemm(Method method, hipblasHandle_t handle, const Problem &p) {
+  hipEvent_t t0, t1;
+  hipEventCreate(&t0);
+  hipEventCreate(&t1);
+
+  gemm_run(method, handle, p);
+
+  hipEventRecord(t0, 0);
+  gemm_run(method, handle, p);
+  hipEventRecord(t1, 0);
+  hipEventSynchronize(t1);
+
+  float ms = 0.0f;
+  hipEventElapsedTime(&ms, t0, t1);
+  hipEventDestroy(t0);
+  hipEventDestroy(t1);
+  return ms;
+}
+
+}  // namespace
+
 int main(int argc, char **argv) try {
   bool method_given = false;
-  Method method     = Method::Reference;
+  Method method     = Method::Native;
 
   Problem p;
   p.m = 1024; p.n = 1024; p.k = 1024;
@@ -34,6 +58,8 @@ int main(int argc, char **argv) try {
   if (p.m <= 0 || p.n <= 0 || p.k <= 0)
     throw std::invalid_argument("m, n and k must be positive");
 
+  set_fp64_emulation_gate(method == Method::CublasOzaki1);
+
   p.lda = p.m; p.ldb = p.k; p.ldc = p.m;
 
   const size_t len_a = size_t(p.lda) * p.k;
@@ -54,17 +80,19 @@ int main(int argc, char **argv) try {
   fill_random(A, len_a, phi, 7774);
   fill_random(B, len_b, phi, 4777);
 
-  // The FP128 reference runs on the host, so the operands have to come back.
+  // The host reference needs the operands back on the CPU side.
   std::vector<double> hA(len_a), hB(len_b), hC(len_c);
   hipMemcpy(hA.data(), A, len_a * sizeof(double), hipMemcpyDeviceToHost);
   hipMemcpy(hB.data(), B, len_b * sizeof(double), hipMemcpyDeviceToHost);
 
-  gemm_fp128(p.m, p.n, p.k, hA.data(), hB.data(), hC.data());
+  gemm_ref(p.m, p.n, p.k, hA.data(), hB.data(), hC.data());
   hipMemcpy(C_exact, hC.data(), len_c * sizeof(double), hipMemcpyHostToDevice);
 
   p.A = A; p.B = B; p.C = C_native;
 
-  gemm_run(Method::Reference, handle, p);
+  gemm_run(Method::Native, handle, p);
+  const int native_bits = emulation_mantissa_bits();
+  const float native_ms = time_gemm(Method::Native, handle, p);
 
   p.C = C;
 
@@ -73,10 +101,15 @@ int main(int argc, char **argv) try {
                                 "' is not compiled into this binary");
 
   gemm_run(method, handle, p);
+  const int emulated_bits = emulation_mantissa_bits();
+  const float emulated_ms = time_gemm(method, handle, p);
 
   printf("method   = %s\n", method_name(method));
   printf("m,n,k    = %d,%d,%d\n", p.m, p.n, p.k);
   printf("phi      = %g\n", phi);
+  // -1 means cuBLAS ran native FP64 rather than the emulated path.
+  printf("mantissa = %d native, %d emulated\n", native_bits, emulated_bits);
+  printf("time     = %.3f ms native, %.3f ms emulated\n", native_ms, emulated_ms);
   printf("                relative      max\n");
   printf("native   = %e  %e\n", error_norm(C_exact, C_native, len_c),
                                 max_error(C_exact, C_native, len_c));
