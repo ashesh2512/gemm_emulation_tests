@@ -25,6 +25,10 @@
   #define hipMemcpyDeviceToHost   cudaMemcpyDeviceToHost
   #define hipDeviceReset          cudaDeviceReset
 
+  #define hipError_t              cudaError_t
+  #define hipSuccess              cudaSuccess
+  #define hipGetErrorString       cudaGetErrorString
+
   #define hipEvent_t              cudaEvent_t
   #define hipEventCreate          cudaEventCreate
   #define hipEventRecord          cudaEventRecord
@@ -48,7 +52,17 @@
 #endif
 
 #include <cstddef>
+#include <stdexcept>
 #include <string>
+
+// Wraps a HIP/CUDA runtime call and throws naming the call that failed.
+#define HIP_CHECK(expr)                                                     \
+  do {                                                                      \
+    const hipError_t hip_check_err = (expr);                                \
+    if (hip_check_err != hipSuccess)                                        \
+      throw std::runtime_error(std::string(#expr) + " failed: " +           \
+                               hipGetErrorString(hip_check_err));           \
+  } while (0)
 
 enum class Method {
   Native,         // native FP64 dgemm, also the baseline for the error norm

@@ -72,11 +72,11 @@ int main(int argc, char **argv) try {
   hipblasCreate(&handle);
 
   double *A, *B, *C, *C_native, *C_exact;
-  hipMalloc(reinterpret_cast<void **>(&A), len_a * sizeof(double));
-  hipMalloc(reinterpret_cast<void **>(&B), len_b * sizeof(double));
-  hipMalloc(reinterpret_cast<void **>(&C), len_c * sizeof(double));
-  hipMalloc(reinterpret_cast<void **>(&C_native), len_c * sizeof(double));
-  hipMalloc(reinterpret_cast<void **>(&C_exact), len_c * sizeof(double));
+  HIP_CHECK(hipMalloc(reinterpret_cast<void **>(&A), len_a * sizeof(double)));
+  HIP_CHECK(hipMalloc(reinterpret_cast<void **>(&B), len_b * sizeof(double)));
+  HIP_CHECK(hipMalloc(reinterpret_cast<void **>(&C), len_c * sizeof(double)));
+  HIP_CHECK(hipMalloc(reinterpret_cast<void **>(&C_native), len_c * sizeof(double)));
+  HIP_CHECK(hipMalloc(reinterpret_cast<void **>(&C_exact), len_c * sizeof(double)));
 
   // Fixed so a run is reproducible; the two values keep A and B different.
   fill_random(A, len_a, phi, 7774);
@@ -88,18 +88,18 @@ int main(int argc, char **argv) try {
   double verify_norm = 0.0, verify_max = 0.0;
   if (verify_ref) {
     std::vector<double> hA(len_a), hB(len_b), hC(len_c);
-    hipMemcpy(hA.data(), A, len_a * sizeof(double), hipMemcpyDeviceToHost);
-    hipMemcpy(hB.data(), B, len_b * sizeof(double), hipMemcpyDeviceToHost);
+    HIP_CHECK(hipMemcpy(hA.data(), A, len_a * sizeof(double), hipMemcpyDeviceToHost));
+    HIP_CHECK(hipMemcpy(hB.data(), B, len_b * sizeof(double), hipMemcpyDeviceToHost));
 
     gemm_ref(p.m, p.n, p.k, hA.data(), hB.data(), hC.data());
 
     double *C_exact_cpu;
-    hipMalloc(reinterpret_cast<void **>(&C_exact_cpu), len_c * sizeof(double));
-    hipMemcpy(C_exact_cpu, hC.data(), len_c * sizeof(double), hipMemcpyHostToDevice);
+    HIP_CHECK(hipMalloc(reinterpret_cast<void **>(&C_exact_cpu), len_c * sizeof(double)));
+    HIP_CHECK(hipMemcpy(C_exact_cpu, hC.data(), len_c * sizeof(double), hipMemcpyHostToDevice));
 
     verify_norm = error_norm(C_exact_cpu, C_exact, len_c);
     verify_max  = max_error(C_exact_cpu, C_exact, len_c);
-    hipFree(C_exact_cpu);
+    HIP_CHECK(hipFree(C_exact_cpu));
   }
 
   p.A = A; p.B = B; p.C = C_native;
@@ -134,11 +134,11 @@ int main(int argc, char **argv) try {
   // Both references are exact to well under an FP64 ulp, so this should be ~1e-16.
   if (verify_ref) printf("ref-diff = %e  %e\n", verify_norm, verify_max);
 
-  hipFree(C_exact);
-  hipFree(C_native);
-  hipFree(C);
-  hipFree(B);
-  hipFree(A);
+  HIP_CHECK(hipFree(C_exact));
+  HIP_CHECK(hipFree(C_native));
+  HIP_CHECK(hipFree(C));
+  HIP_CHECK(hipFree(B));
+  HIP_CHECK(hipFree(A));
   hipblasDestroy(handle);
   hipDeviceReset();
   return 0;

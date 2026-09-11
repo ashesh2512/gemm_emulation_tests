@@ -65,31 +65,31 @@ void fill_random(double *x, size_t n, double phi, unsigned long long seed) {
 
 double error_norm(const double *x, const double *y, size_t n) {
   double *acc = nullptr;
-  hipMalloc(reinterpret_cast<void **>(&acc), 2 * sizeof(double));
-  hipMemset(acc, 0, 2 * sizeof(double));
+  HIP_CHECK(hipMalloc(reinterpret_cast<void **>(&acc), 2 * sizeof(double)));
+  HIP_CHECK(hipMemset(acc, 0, 2 * sizeof(double)));
 
   const int block = 256;
   // The atomics sum in an arbitrary order, so the last digits can move run to run.
   error_norm_kernel<<<(n + block - 1) / block, block>>>(x, y, n, acc);
 
   double sum[2] = {0.0, 0.0};
-  hipMemcpy(sum, acc, 2 * sizeof(double), hipMemcpyDeviceToHost);
-  hipFree(acc);
+  HIP_CHECK(hipMemcpy(sum, acc, 2 * sizeof(double), hipMemcpyDeviceToHost));
+  HIP_CHECK(hipFree(acc));
 
   return sum[1] > 0.0 ? std::sqrt(sum[0] / sum[1]) : std::sqrt(sum[0]);
 }
 
 double max_error(const double *x, const double *y, size_t n) {
   unsigned long long *acc = nullptr;
-  hipMalloc(reinterpret_cast<void **>(&acc), sizeof(unsigned long long));
-  hipMemset(acc, 0, sizeof(unsigned long long));
+  HIP_CHECK(hipMalloc(reinterpret_cast<void **>(&acc), sizeof(unsigned long long)));
+  HIP_CHECK(hipMemset(acc, 0, sizeof(unsigned long long)));
 
   const int block = 256;
   max_error_kernel<<<(n + block - 1) / block, block>>>(x, y, n, acc);
 
   unsigned long long bits = 0;
-  hipMemcpy(&bits, acc, sizeof(unsigned long long), hipMemcpyDeviceToHost);
-  hipFree(acc);
+  HIP_CHECK(hipMemcpy(&bits, acc, sizeof(unsigned long long), hipMemcpyDeviceToHost));
+  HIP_CHECK(hipFree(acc));
 
   double out;
   memcpy(&out, &bits, sizeof(out));
@@ -334,14 +334,14 @@ void gemm_run(Method method, hipblasHandle_t handle, const Problem &p) {
 #if defined(HAVE_GEMMUL8)
     case Method::Gemmul8: {
       void *work = nullptr;
-      hipMalloc(&work, gemmul8::workSize(p.m, p.n, p.k, p.num_moduli));
+      HIP_CHECK(hipMalloc(&work, gemmul8::workSize(p.m, p.n, p.k, p.num_moduli)));
 
       gemmul8::gemm<gemmul8::Backend::INT8>(
           handle, p.transa, p.transb, p.m, p.n, p.k,
           &p.alpha, p.A, p.lda, p.B, p.ldb, &p.beta, p.C, p.ldc,
           p.num_moduli, p.fastmode, work);
 
-      hipFree(work);
+      HIP_CHECK(hipFree(work));
       return;
     }
 #endif
