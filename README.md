@@ -44,7 +44,8 @@ The remaining options describe the problem being solved:
 | `--phi=<double>` | 1.0 | Controls the entries of A and B. |
 | `--moduli=<int>` | 2 | Number of moduli used by the Ozaki II methods, `ozablas-ozaki2` and `gemmul8`. |
 | `--splits=<int>` | 2 | Number of splits used by the Ozaki I methods, `cublas-ozaki1` and `ozablas-ozaki1`. |
-| `--verify-ref` | off | Also compute the host FP128 reference and report `ref-diff`. |
+| `--no-106bit-ref` | off | Skip the 106 bit reference; only the `diff` line is printed. |
+| `--verify-ref` | off | Sanity-check the 106 bit reference against a host FP128 one and report `ref-diff`. |
 
 `--phi` sets how the random input matrices are generated. A negative value draws every entry from a standard normal distribution. A non-negative value uses `(rand - 0.5) * exp(randn * phi)` instead, so the exponent range of the entries widens as `phi` grows and the emulation has a harder time matching FP64. The seed is fixed in the code, so repeated runs with the same options give the same matrices.
 
@@ -52,18 +53,23 @@ The reference is a double-double matrix multiply on the GPU, carrying about 106 
 ```
 ./gemm_test --method=gemmul8 --m=1024 --n=1024 --k=1024 --phi=2.0 --moduli=3
 ```
-The run first echoes the settings, the mantissa bit count each `dgemm` call actually used, and the time for each, then prints the error table:
+The run first echoes the settings, the accuracy knob the selected method was driven by, and the time for each `dgemm`, then prints the error table:
 ```
-                relative      max
-native   = 1.041317e-15  1.131069e-09
-emulated = 5.097529e-13  3.970221e-06
-diff     = 5.097528e-13  3.969089e-06
+                             relative      max
+64 bit native vs 106 bit   = 1.041317e-15  1.131069e-09
+64 bit emulated vs 106 bit = 5.097529e-13  3.970221e-06
+diff                       = 5.097528e-13  3.969089e-06
 ```
-`native` is the error of the vendor FP64 `dgemm`, `emulated` the error of the selected method, and `diff` compares the two against each other.
+The first row is the error of the vendor FP64 `dgemm` against the 106 bit reference, the second the error of the selected method against the same reference, and `diff` compares the two FP64 results against each other without involving the reference at all.
 
-The `mantissa` line is the check that the emulated path was really taken: it reports the bit count cuBLAS was configured with for the native and emulated calls, and `-1` means the query was unavailable, i.e. plain FP64 ran. The `time` line reports one warm run of each in milliseconds.
+`--no-106bit-ref` skips the reference altogether. It is a full double-double `gemm`, so on large problems it costs far more than the two `dgemm` calls being measured; drop it when only the timings or the `diff` row are wanted. The two `vs 106 bit` rows need the reference, so only `diff` is printed:
+```
+./gemm_test --method=gemmul8 --m=8192 --n=8192 --k=8192 --no-106bit-ref
+```
 
-`--verify-ref` adds a cross-check: A and B are copied back to the host, the FP128 reference runs there under OpenMP, and the extra `ref-diff` line reports how far the two references are apart:
+The `accuracy` line reports whichever knob actually governs the selected method, since the methods do not share one. For `native` and `cublas-ozaki1` it is the mantissa bit count cuBLAS was configured with for the native and emulated calls, where `-1` means the query was unavailable, i.e. plain FP64 ran; this is the check that the emulated path was really taken. For `ozablas-ozaki1` it is `--splits`, and for the Ozaki II methods `ozablas-ozaki2` and `gemmul8` it is `--moduli`. Those methods never report a mantissa count, because cuBLAS is not the one doing the emulating. The `time` line reports one warm run of each in milliseconds.
+
+`--verify-ref` sanity-checks the reference itself. A and B are copied back to the host, the FP128 reference runs there under OpenMP, and the extra `ref-diff` line reports how far the two references are apart. The host result is never used to score the two `dgemm` calls; it exists only to confirm the 106 bit reference is trustworthy, so `--verify-ref` needs the reference and is rejected together with `--no-106bit-ref`:
 ```
 OMP_NUM_THREADS=64 ./gemm_test --method=gemmul8 --verify-ref
 ```

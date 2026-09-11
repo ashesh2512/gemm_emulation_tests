@@ -33,6 +33,7 @@ float time_gemm(Method method, hipblasHandle_t handle, const Problem &p) {
 int main(int argc, char **argv) try {
   bool method_given = false;
   Method method     = Method::Native;
+  bool use_ref      = true;
   bool verify_ref   = false;
 
   Problem p;
@@ -52,6 +53,7 @@ int main(int argc, char **argv) try {
     else if (strncmp(argv[i], "--phi=", 6) == 0) phi = atof(argv[i] + 6);
     else if (strncmp(argv[i], "--moduli=", 9) == 0) p.num_moduli = atoi(argv[i] + 9);
     else if (strncmp(argv[i], "--splits=", 9) == 0) p.num_splits = atoi(argv[i] + 9);
+    else if (strcmp(argv[i], "--no-106bit-ref") == 0) use_ref = false;
     else if (strcmp(argv[i], "--verify-ref") == 0) verify_ref = true;
     else throw std::invalid_argument(std::string("unknown option '") + argv[i] + "'");
   }
@@ -59,6 +61,9 @@ int main(int argc, char **argv) try {
   if (!method_given) throw std::invalid_argument("missing --method=<name>");
   if (p.m <= 0 || p.n <= 0 || p.k <= 0)
     throw std::invalid_argument("m, n and k must be positive");
+  if (verify_ref && !use_ref)
+    throw std::invalid_argument("--verify-ref checks the 106 bit reference, so it "
+                                "cannot be used with --no-106bit-ref");
 
   set_fp64_emulation_gate(method == Method::CublasOzaki1);
 
@@ -71,18 +76,19 @@ int main(int argc, char **argv) try {
   hipblasHandle_t handle;
   hipblasCreate(&handle);
 
-  double *A, *B, *C, *C_native, *C_exact;
+  double *A, *B, *C, *C_native, *C_exact = nullptr;
   HIP_CHECK(hipMalloc(reinterpret_cast<void **>(&A), len_a * sizeof(double)));
   HIP_CHECK(hipMalloc(reinterpret_cast<void **>(&B), len_b * sizeof(double)));
   HIP_CHECK(hipMalloc(reinterpret_cast<void **>(&C), len_c * sizeof(double)));
   HIP_CHECK(hipMalloc(reinterpret_cast<void **>(&C_native), len_c * sizeof(double)));
-  HIP_CHECK(hipMalloc(reinterpret_cast<void **>(&C_exact), len_c * sizeof(double)));
+  if (use_ref)
+    HIP_CHECK(hipMalloc(reinterpret_cast<void **>(&C_exact), len_c * sizeof(double)));
 
   // Fixed so a run is reproducible; the two values keep A and B different.
   fill_random(A, len_a, phi, 7774);
   fill_random(B, len_b, phi, 4777);
 
-  gemm_ref_gpu(p.m, p.n, p.k, A, B, C_exact);
+  if (use_ref) gemm_ref_gpu(p.m, p.n, p.k, A, B, C_exact);
 
   // Off by default: the host reference costs two transfers plus an FP128 gemm.
   double verify_norm = 0.0, verify_max = 0.0;
@@ -121,20 +127,37 @@ int main(int argc, char **argv) try {
   printf("method   = %s\n", method_name(method));
   printf("m,n,k    = %d,%d,%d\n", p.m, p.n, p.k);
   printf("phi      = %g\n", phi);
-  // -1 means cuBLAS ran native FP64 rather than the emulated path.
-  printf("mantissa = %d native, %d emulated\n", native_bits, emulated_bits);
+  // Only the cuBLAS path is steered by a mantissa count; the others have their own knob.
+  switch (method) {
+    case Method::Native:
+    case Method::CublasOzaki1:
+      // -1 means cuBLAS ran native FP64 rather than the emulated path.
+      printf("accuracy = %d mantissa bits native, %d emulated\n", native_bits, emulated_bits);
+      break;
+    case Method::OzablasOzaki1:
+      printf("accuracy = %d splits\n", p.num_splits);
+      break;
+    case Method::OzablasOzaki2:
+    case Method::Gemmul8:
+      printf("accuracy = %d moduli\n", p.num_moduli);
+      break;
+    default:
+      break;
+  }
   printf("time     = %.3f ms native, %.3f ms emulated\n", native_ms, emulated_ms);
-  printf("                relative      max\n");
-  printf("native   = %e  %e\n", error_norm(C_exact, C_native, len_c),
-                                max_error(C_exact, C_native, len_c));
-  printf("emulated = %e  %e\n", error_norm(C_exact, C, len_c),
-                                max_error(C_exact, C, len_c));
-  printf("diff     = %e  %e\n", error_norm(C_native, C, len_c),
-                                max_error(C_native, C, len_c));
+  printf("                             relative      max\n");
+  if (use_ref) {
+    printf("64 bit native vs 106 bit   = %e  %e\n", error_norm(C_exact, C_native, len_c),
+                                                    max_error(C_exact, C_native, len_c));
+    printf("64 bit emulated vs 106 bit = %e  %e\n", error_norm(C_exact, C, len_c),
+                                                    max_error(C_exact, C, len_c));
+  }
+  printf("diff                       = %e  %e\n", error_norm(C_native, C, len_c),
+                                                  max_error(C_native, C, len_c));
   // Both references are exact to well under an FP64 ulp, so this should be ~1e-16.
-  if (verify_ref) printf("ref-diff = %e  %e\n", verify_norm, verify_max);
+  if (verify_ref) printf("ref-diff                   = %e  %e\n", verify_norm, verify_max);
 
-  HIP_CHECK(hipFree(C_exact));
+  if (use_ref) HIP_CHECK(hipFree(C_exact));
   HIP_CHECK(hipFree(C_native));
   HIP_CHECK(hipFree(C));
   HIP_CHECK(hipFree(B));
