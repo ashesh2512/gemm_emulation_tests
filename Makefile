@@ -4,18 +4,30 @@
 
 BACKEND ?= auto
 
-# CUDA_PATH, HIP_PATH, GPU_ARCH, GEMMUL8_PATH and OZABLAS_PATH have no default;
-# set them on the command line or in the environment. GPU_ARCH=auto opts in to
-# querying the device for the architecture.
+# CUDA_PATH, HIP_PATH and GPU_ARCH have no default; set them on the command line
+# or in the environment. GPU_ARCH=auto opts in to querying the device for the
+# architecture.
 
 # Set to 1 to build the corresponding method into the binary.
 HAVE_GEMMUL8 ?= 0
 HAVE_OZABLAS ?= 0
 HAVE_CUBLAS_OZAKI1 ?= 0
 
+# Restrict GEMMul8 explicit instantiations to INT8.
+INT8_ONLY ?= 1
 
-# `clean` just deletes files, so skip toolchain detection and its hard errors.
-ifneq ($(MAKECMDGOALS),clean)
+# Host C++ compiler; must support C++20 (<bit>, <numbers>, ...).
+HOST_CXX ?= g++-14
+
+# GEMMul8 and ozablas are git submodules; `override` keeps them pinned to the checked-in copies.
+override GEMMUL8_PATH := $(CURDIR)/external/GEMMul8
+override OZABLAS_PATH := $(CURDIR)/external/ozablas
+GEMMUL8_LIB := $(GEMMUL8_PATH)/lib/libgemmul8.a
+OZABLAS_LIB := $(OZABLAS_PATH)/build/src/libozablas.so
+
+
+# The clean targets just delete files, so skip toolchain detection and its hard errors.
+ifeq ($(filter clean distclean,$(MAKECMDGOALS)),)
 
 #===============
 # Auto-detect backend (CUDA or HIP)
@@ -55,11 +67,20 @@ export LD_LIBRARY_PATH := $(CUDA_PATH)/lib64:$(LD_LIBRARY_PATH)
 
 COMPILER := nvcc
 LIBS := -lcublas -lcublasLt -lcurand -lcudart -lcuda -lnvidia-ml -ldl -lgomp
-FLAGS := -ccbin g++-14 -std=c++20 -O3 
+FLAGS := -ccbin $(HOST_CXX) -std=c++20 -O3 
 FLAGS += -x cu
 # nvcc does not take -fopenmp itself; it has to reach the host compiler.
 FLAGS += -Xcompiler -fopenmp
 ARCH := -gencode arch=compute_$(GPU_ARCH),code=sm_$(GPU_ARCH)
+SUBMAKE_TOOLCHAIN := CUDA_PATH=$(CUDA_PATH)
+# GEMMul8's own makefiles never pass -ccbin; NVCC_PREPEND_FLAGS injects it without patching the submodule.
+SUBMAKE_ENV := NVCC_PREPEND_FLAGS="-ccbin $(HOST_CXX)"
+OZABLAS_CMAKE_ARGS := -DCMAKE_BUILD_TYPE=Release -DOZABLAS_ENABLE_CUDA=ON
+OZABLAS_CMAKE_ARGS += -DCMAKE_CUDA_ARCHITECTURES=$(GPU_ARCH)
+OZABLAS_CMAKE_ARGS += -DOZABLAS_BUILD_EXAMPLES=OFF
+# nvcc has to be told which host compiler to use for both plain C++ and the CUDA host pass.
+OZABLAS_CMAKE_ARGS += -DCMAKE_CXX_COMPILER=$(HOST_CXX)
+OZABLAS_CMAKE_ARGS += -DCMAKE_CUDA_HOST_COMPILER=$(HOST_CXX)
 
 endif
 
@@ -89,6 +110,12 @@ FLAGS += -fopenmp
 FLAGS += -Wno-unused-result -Wno-unused-command-line-argument -Wno-unused-value
 FLAGS += -DOCML_BASIC_ROUNDED_OPERATIONS
 ARCH := --offload-arch=$(GPU_ARCH)
+SUBMAKE_TOOLCHAIN := HIP_PATH=$(HIP_PATH)
+SUBMAKE_ENV :=
+OZABLAS_CMAKE_ARGS := -DCMAKE_BUILD_TYPE=Release -DOZABLAS_ENABLE_HIP=ON
+OZABLAS_CMAKE_ARGS += -DCMAKE_HIP_ARCHITECTURES=$(GPU_ARCH)
+OZABLAS_CMAKE_ARGS += -DOZABLAS_BUILD_EXAMPLES=OFF
+OZABLAS_CMAKE_ARGS += -DCMAKE_CXX_COMPILER=hipcc
 
 endif
 
@@ -98,27 +125,24 @@ endif
 #===============
 
 ifeq ($(HAVE_GEMMUL8),1)
-ifeq ($(origin GEMMUL8_PATH),undefined)
-$(error HAVE_GEMMUL8=1 requires GEMMUL8_PATH=<path to GEMMul8>)
-endif
 FLAGS += -DHAVE_GEMMUL8 -I$(GEMMUL8_PATH)/include
-# Passed via -Wl, so hipcc does not mistake the archive for a HIP source file.
-LIBS += -Wl,$(GEMMUL8_PATH)/lib/libgemmul8.a
+# Passed via -Xlinker so the archive is not mistaken for a source file by -x cu
+# (nvcc) or HIP (hipcc); nvcc rejects the -Wl, form outright.
+LIBS += -Xlinker $(GEMMUL8_LIB)
+DEPS += $(GEMMUL8_LIB)
 endif
 
 ifeq ($(HAVE_OZABLAS),1)
-ifeq ($(origin OZABLAS_PATH),undefined)
-$(error HAVE_OZABLAS=1 requires OZABLAS_PATH=<path to ozablas>)
-endif
 FLAGS += -DHAVE_OZABLAS -I$(OZABLAS_PATH)/include
-LIBS += -L$(OZABLAS_PATH)/build/src -lozablas -Wl,-rpath,$(OZABLAS_PATH)/build/src
+LIBS += -L$(OZABLAS_PATH)/build/src -lozablas -Xlinker -rpath=$(OZABLAS_PATH)/build/src
+DEPS += $(OZABLAS_LIB)
 endif
 
 ifeq ($(HAVE_CUBLAS_OZAKI1),1)
 FLAGS += -DHAVE_CUBLAS_OZAKI1
 endif
 
-endif # MAKECMDGOALS != clean
+endif # no clean target requested
 
 
 #===============
@@ -143,11 +167,23 @@ endif
 	$(info HAVE_GEMMUL8 : $(HAVE_GEMMUL8))
 	$(info HAVE_OZABLAS : $(HAVE_OZABLAS))
 
-$(TARGET): $(SRCS) gemm_methods.hpp
+$(TARGET): $(SRCS) gemm_methods.hpp $(DEPS)
 	$(COMPILER) $(SRCS) $(FLAGS) $(ARCH) -o $@ $(LIBS)
+
+$(GEMMUL8_LIB):
+	$(SUBMAKE_ENV) $(MAKE) -C $(GEMMUL8_PATH) BACKEND=$(BACKEND) GPU_ARCH=$(GPU_ARCH) \
+	  INT8_ONLY=$(INT8_ONLY) $(SUBMAKE_TOOLCHAIN)
+
+$(OZABLAS_LIB):
+	cmake -S $(OZABLAS_PATH) -B $(OZABLAS_PATH)/build $(OZABLAS_CMAKE_ARGS)
+	cmake --build $(OZABLAS_PATH)/build -j
 
 VERSION:
 	$(COMPILER) --version
 
 clean:
 	rm -f *.o $(TARGET)
+
+distclean: clean
+	rm -rf $(GEMMUL8_PATH)/build $(GEMMUL8_PATH)/lib $(GEMMUL8_PATH)/compile_info
+	rm -rf $(OZABLAS_PATH)/build

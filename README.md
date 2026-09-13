@@ -1,38 +1,42 @@
 # gemm_emulation_tests
 
-An API for FP64 `dgemm` emulation on GPUs. It runs the vendor FP64 `dgemm` and one emulated method on the same problem, measures both against a double-double reference computed on the GPU, and reports the errors side by side.
+An API for FP64 `dgemm` emulation on GPUs. It runs the vendor FP64 `dgemm` and one emulated method on the same problem, and compares both against a double-double reference.
 
 ## Building
 
+Emulation libraries GEMMul8 and ozablas are git submodules under `external/`, so clone with:
+```
+git clone --recurse-submodules <gemm_emulation_tests url>
+```
+
 The build command should explicitly specify the backend (`cuda`, `hip`), backend path, GPU architecture, and library used for emulation, E.g. on MI250X GPUs, a build command using Ozaki II emulation via the Gemmul8 library looks like - 
 ```
-make BACKEND=hip HIP_PATH=/opt/rocm-7.2.0 GPU_ARCH=gfx90a HAVE_GEMMUL8=1 GEMMUL8_PATH=/path/to/GEMMul8
+make BACKEND=hip HIP_PATH=/opt/rocm-7.2.0 GPU_ARCH=gfx90a HAVE_GEMMUL8=1
 ```
-The paths have no defaults, so the build stops with an error if one is missing; `GPU_ARCH=auto` queries the device instead of naming an architecture, and `BACKEND` defaults to `auto`, which picks CUDA or HIP from whichever of `nvidia-smi` or `rocminfo` is on the path. Enabling `HAVE_OZABLAS=1`, e.g., likewise requires `OZABLAS_PATH`.
+Enabling `HAVE_GEMMUL8=1` or `HAVE_OZABLAS=1` makes the Makefile build the corresponding submodule first, with the same backend and architecture as the main binary. The toolchain paths have no defaults, so the build stops with an error if one is missing; `GPU_ARCH=auto` queries the device (if available) instead of naming an architecture, and `BACKEND` defaults to `auto`, which picks CUDA or HIP from whichever of `nvidia-smi` or `rocminfo` is on the path.
 
 These are all the variables the Makefile reads; they can be set on the command line or in the environment:
 
 | Variable | Default | Required when | Meaning |
 | --- | --- | --- | --- |
-| `BACKEND` | `auto` | never | `cuda`, `hip`, or `auto`. `auto` picks `cuda` if `nvidia-smi` is on the path, else `hip` if `rocminfo` is, else errors out. |
+| `BACKEND` | `auto` | always | `cuda`, `hip`, or `auto`. `auto` picks `cuda` if `nvidia-smi` is on the path, else `hip` if `rocminfo` is, else errors out. |
 | `GPU_ARCH` | none | always | Target architecture, e.g. `90` for CUDA or `gfx90a` for HIP. `auto` reads it from `nvidia-smi` or `amd-smi`. |
 | `CUDA_PATH` | none | `BACKEND=cuda` | Root of the CUDA toolkit. Its `bin` and `lib64` are prepended to `PATH` and `LD_LIBRARY_PATH`. |
 | `HIP_PATH` | none | `BACKEND=hip` | Root of the ROCm install. Its `bin` and `lib` are prepended to `PATH` and `LD_LIBRARY_PATH`. |
-| `HAVE_GEMMUL8` | `0` | never | Set to `1` to compile in the `gemmul8` method. |
-| `GEMMUL8_PATH` | none | `HAVE_GEMMUL8=1` | Root of GEMMul8; expects `include/` and `lib/libgemmul8.a`. |
-| `HAVE_OZABLAS` | `0` | never | Set to `1` to compile in the `ozablas-ozaki1` and `ozablas-ozaki2` methods. |
-| `OZABLAS_PATH` | none | `HAVE_OZABLAS=1` | Root of ozablas; expects `include/` and `build/src/libozablas.so`. |
+| `HAVE_GEMMUL8` | `0` | never | Set to `1` to build the `external/GEMMul8` submodule and compile in the `gemmul8` method. |
+| `HAVE_OZABLAS` | `0` | never | Set to `1` to build the `external/ozablas` submodule and compile in the `ozablas-ozaki1` and `ozablas-ozaki2` methods. |
 | `HAVE_CUBLAS_OZAKI1` | `0` | never | Set to `1` to compile in the `cublas-ozaki1` method. CUDA only; it compiles out on HIP. |
+| `INT8_ONLY` | `1` | never | Passed to the GEMMul8 submodule. `1` restricts its explicit instantiations to INT8, which builds much faster. |
 
-The compiler is chosen by the backend, `nvcc` for CUDA and `hipcc` for HIP, and is not overridable. `make clean` skips all of the above, so it needs none of them.
+The submodule locations are currently fixed at `external/GEMMul8` and `external/ozablas` and cannot be pointed elsewhere. The compiler is chosen by the backend, `nvcc` for CUDA and `hipcc` for HIP, and is not overridable.
 
 ## Running
 
 It is possible to have multiple libraries linked at the same time for emulation. Hence `--method` is required and the run stops with an error without it, e.g.
 ```
-./gemm_test --method=gemmul8
+./gemm_test --method=gemmul8 ...
 ```
-The methods are `native`, the vendor FP64 `dgemm` from the GPU BLAS library, `cublas-ozaki1`, `ozablas-ozaki1`, `ozablas-ozaki2`, and `gemmul8`. A method that was not compiled into the binary is rejected at startup.
+The methods are `native`, the vendor FP64 `dgemm` from the GPU BLAS library, `cublas-ozaki1`, `ozablas-ozaki1`, `ozablas-ozaki2`, and `gemmul8` which only emulates via the `ozaki2` method. A method that was not compiled into the binary is rejected at startup.
 
 The remaining options describe the problem being solved:
 
@@ -62,12 +66,12 @@ diff                       = 5.097528e-13  3.969089e-06
 ```
 The first row is the error of the vendor FP64 `dgemm` against the 106 bit reference, the second the error of the selected method against the same reference, and `diff` compares the two FP64 results against each other without involving the reference at all.
 
-`--no-106bit-ref` skips the reference altogether. It is a full double-double `gemm`, so on large problems it costs far more than the two `dgemm` calls being measured; drop it when only the timings or the `diff` row are wanted. The two `vs 106 bit` rows need the reference, so only `diff` is printed:
+`--no-106bit-ref` skips the reference altogether. It is a full double-double `gemm`, so on large problems it costs far more than the two `dgemm` calls being measured.
 ```
-./gemm_test --method=gemmul8 --m=8192 --n=8192 --k=8192 --no-106bit-ref
+./gemm_test --no-106bit-ref ...
 ```
 
-The `accuracy` line reports whichever knob actually governs the selected method, since the methods do not share one. For `native` and `cublas-ozaki1` it is the mantissa bit count cuBLAS was configured with for the native and emulated calls, where `-1` means the query was unavailable, i.e. plain FP64 ran; this is the check that the emulated path was really taken. For `ozablas-ozaki1` it is `--splits`, and for the Ozaki II methods `ozablas-ozaki2` and `gemmul8` it is `--moduli`. Those methods never report a mantissa count, because cuBLAS is not the one doing the emulating. The `time` line reports one warm run of each in milliseconds.
+The `accuracy` line reports whichever knob actually governs the selected method, since the methods do not share one. For `native` and `cublas-ozaki1` it is the mantissa bit count cuBLAS was configured with for the native and emulated calls, where `-1` means the query was unavailable, i.e. plain FP64 ran; this is the check that the emulated path was really taken. For `ozablas-ozaki1` it is `--splits`, and for the Ozaki II methods `ozablas-ozaki2` and `gemmul8` it is `--moduli`. Those methods never report a mantissa count. The `time` line reports one warm run of each in milliseconds.
 
 `--verify-ref` sanity-checks the reference itself. A and B are copied back to the host, the FP128 reference runs there under OpenMP, and the extra `ref-diff` line reports how far the two references are apart. The host result is never used to score the two `dgemm` calls; it exists only to confirm the 106 bit reference is trustworthy, so `--verify-ref` needs the reference and is rejected together with `--no-106bit-ref`:
 ```
@@ -100,14 +104,14 @@ OMP_NUM_THREADS=64 ~/cudevmap.sh ./gemm_test --method=cublas-ozaki1 --m=10240 --
 
 ### Pinoak (AMD MI250X, `gfx90a`)
 
-Load ROCm, then build against whichever emulation libraries are wanted. Each one needs its own path:
+Load ROCm, then build with whichever emulation libraries are wanted:
 ```
 module purge
 module load PrgEnv-amd amd/7.2.0 rocm/7.2.0
 module load craype-x86-trento
 export ROCM_PATH=/opt/rocm-7.2.0
 export HIP_PLATFORM=amd
-make BACKEND=hip HIP_PATH=/opt/rocm-7.2.0 GPU_ARCH=gfx90a HAVE_GEMMUL8=1 GEMMUL8_PATH=/home/users/sharmaas/GEMMul8 HAVE_OZABLAS=1 OZABLAS_PATH=/home/users/sharmaas/ozablas
+make -j BACKEND=hip HIP_PATH=/opt/rocm-7.2.0 GPU_ARCH=gfx90a HAVE_GEMMUL8=1 HAVE_OZABLAS=1
 ```
 
 `~/rocrmap.sh` is the ROCm equivalent bash script for CPU-GPU affinity:

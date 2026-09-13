@@ -334,7 +334,9 @@ void gemm_run(Method method, hipblasHandle_t handle, const Problem &p) {
 #if defined(HAVE_GEMMUL8)
     case Method::Gemmul8: {
       void *work = nullptr;
-      HIP_CHECK(hipMalloc(&work, gemmul8::workSize(p.m, p.n, p.k, p.num_moduli)));
+      // Backend must be explicit: workSize has two overloads differing only in
+      // template-argument order, so an unqualified call is ambiguous.
+      HIP_CHECK(hipMalloc(&work, gemmul8::workSize<gemmul8::Backend::INT8>(p.m, p.n, p.k, p.num_moduli)));
 
       gemmul8::gemm<gemmul8::Backend::INT8>(
           handle, p.transa, p.transb, p.m, p.n, p.k,

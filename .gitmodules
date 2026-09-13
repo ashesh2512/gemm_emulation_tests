@@ -1,0 +1,9 @@
+[submodule "external/GEMMul8"]
+	path = external/GEMMul8
+	url = https://github.com/ashesh2512/GEMMul8.git
+	branch = int8
+	ignore = untracked
+[submodule "external/ozablas"]
+	path = external/ozablas
+	url = https://github.com/ashesh2512/ozablas.giti
+	ignore = untracked
