@@ -5,6 +5,8 @@
 #include <cstring>
 #include <stdexcept>
 #include <vector>
+#include <iostream>
+#include <iomanip>
 
 namespace {
 
@@ -121,7 +123,21 @@ int main(int argc, char **argv) try {
     throw std::invalid_argument(std::string("method '") + method_name(method) +
                                 "' is not compiled into this binary");
 
+  size_t baseline_free_bytes = 0, total_bytes = 0;
+  HIP_CHECK(hipMemGetInfo(&baseline_free_bytes, &total_bytes));
+
+  MemoryHighWaterMonitor mem_monitor;
+  mem_monitor.start(/*device_id=*/0);
+  
   const float emulated_ms = time_gemm(method, handle, p);
+
+  hipDeviceSynchronize();
+
+  // Stop polling and report the peak GPU memory used during the
+  // warm-up + benchmark GEMM calls (this captures cuBLAS/emulation
+  // workspace even if it's allocated and freed within a single call).
+  size_t min_free_bytes = mem_monitor.stop();
+
   const int emulated_bits = emulation_mantissa_bits();
 
   printf("method   = %s\n", method_name(method));
@@ -156,6 +172,17 @@ int main(int argc, char **argv) try {
                                                     max_error(C_native, C, len_c));
   // Both references are exact to well under an FP64 ulp, so this should be ~1e-16.
   if (verify_ref) printf("ref-diff                   = %e  %e\n", verify_norm, verify_max);
+
+    size_t peak_used_bytes = total_bytes - min_free_bytes;
+    size_t baseline_used_bytes = total_bytes - baseline_free_bytes;
+    double workspace_gb = (peak_used_bytes > baseline_used_bytes)
+        ? (peak_used_bytes - baseline_used_bytes) / (1024.0 * 1024.0 * 1024.0)
+        : 0.0;
+    std::cout << "-------------------------------------------" << std::endl;
+    std::cout << "Peak GPU memory during GEMM calls: " << std::fixed << std::setprecision(3)
+              << peak_used_bytes / (1024.0 * 1024.0 * 1024.0) << " GB" << std::endl;
+    std::cout << "cuBLAS/emulation workspace (peak - baseline): " << std::fixed << std::setprecision(3)
+              << workspace_gb << " GB" << std::endl;
 
   if (use_ref) HIP_CHECK(hipFree(C_exact));
   HIP_CHECK(hipFree(C_native));
