@@ -5,5 +5,5 @@
 	ignore = untracked
 [submodule "external/ozablas"]
 	path = external/ozablas
-	url = https://github.com/ashesh2512/ozablas.giti
+	url = https://github.com/ashesh2512/ozablas.git
 	ignore = untracked
