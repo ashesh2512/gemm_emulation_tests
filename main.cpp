@@ -16,6 +16,8 @@ float time_gemm(Method method, hipblasHandle_t handle, const Problem &p) {
   hipEventCreate(&t0);
   hipEventCreate(&t1);
 
+  // two calls to warm up the timed call
+  gemm_run(method, handle, p);
   gemm_run(method, handle, p);
 
   hipEventRecord(t0, 0);
@@ -112,9 +114,8 @@ int main(int argc, char **argv) try {
 
   p.A = A; p.B = B; p.C = C_native;
 
-  gemm_run(Method::Native, handle, p);
-  const int native_bits = emulation_mantissa_bits();
   const float native_ms = time_gemm(Method::Native, handle, p);
+  const int native_bits = emulation_mantissa_bits();
 
   p.C = C;
 
@@ -137,8 +138,8 @@ int main(int argc, char **argv) try {
   // workspace even if it's allocated and freed within a single call).
   size_t min_free_bytes = mem_monitor.stop();
 
-  const int emulated_bits = emulation_mantissa_bits();
   const float emulated_ms = time_gemm(method, handle, p);
+  const int emulated_bits = emulation_mantissa_bits();
 
   printf("method   = %s\n", method_name(method));
   printf("m,n,k    = %d,%d,%d\n", p.m, p.n, p.k);
@@ -161,15 +162,15 @@ int main(int argc, char **argv) try {
       break;
   }
   printf("time     = %.3f ms native, %.3f ms emulated\n", native_ms, emulated_ms);
-  printf("                             relative      max\n");
+  printf("                             rel-frob      max-rel-elem\n");
   if (use_ref) {
     printf("64 bit native vs 106 bit   = %e  %e\n", error_norm(C_exact, C_native, len_c),
                                                     max_error(C_exact, C_native, len_c));
     printf("64 bit emulated vs 106 bit = %e  %e\n", error_norm(C_exact, C, len_c),
                                                     max_error(C_exact, C, len_c));
   }
-  printf("diff                       = %e  %e\n", error_norm(C_native, C, len_c),
-                                                  max_error(C_native, C, len_c));
+    printf("emulated vs native         = %e  %e\n", error_norm(C_native, C, len_c),
+                                                    max_error(C_native, C, len_c));
   // Both references are exact to well under an FP64 ulp, so this should be ~1e-16.
   if (verify_ref) printf("ref-diff                   = %e  %e\n", verify_norm, verify_max);
 
