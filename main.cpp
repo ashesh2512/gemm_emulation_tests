@@ -128,8 +128,8 @@ int main(int argc, char **argv) try {
 
   MemoryHighWaterMonitor mem_monitor;
   mem_monitor.start(/*device_id=*/0);
-
-  gemm_run(method, handle, p);
+  
+  const float emulated_ms = time_gemm(method, handle, p);
 
   hipDeviceSynchronize();
 
@@ -138,7 +138,6 @@ int main(int argc, char **argv) try {
   // workspace even if it's allocated and freed within a single call).
   size_t min_free_bytes = mem_monitor.stop();
 
-  const float emulated_ms = time_gemm(method, handle, p);
   const int emulated_bits = emulation_mantissa_bits();
 
   printf("method   = %s\n", method_name(method));
