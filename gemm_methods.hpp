@@ -24,6 +24,9 @@
   #define hipMemcpyHostToDevice   cudaMemcpyHostToDevice
   #define hipMemcpyDeviceToHost   cudaMemcpyDeviceToHost
   #define hipDeviceReset          cudaDeviceReset
+  #define hipMemGetInfo           cudaMemGetInfo
+  #define hipSetDevice            cudaSetDevice
+  #define hipDeviceSynchronize    cudaDeviceSynchronize
 
   #define hipError_t              cudaError_t
   #define hipSuccess              cudaSuccess
@@ -87,6 +90,48 @@ struct Problem {
   int num_moduli = 2;      // Ozaki II
   int num_splits = 2;      // Ozaki I
   bool fastmode  = false;  // Ozaki II
+};
+
+// Polls hipMemGetInfo() from a background host thread to catch transient
+// peak GPU memory usage (e.g. cuBLAS emulation workspace that is allocated
+// and freed internally within a single call, which a before/after snapshot
+// would miss).
+#include <atomic>
+#include <thread>
+class MemoryHighWaterMonitor {
+public:
+    void start(int device_id, std::chrono::microseconds poll_interval = std::chrono::microseconds(100)) {
+        device_id_ = device_id;
+        poll_interval_ = poll_interval;
+        stop_.store(false);
+        min_free_bytes_.store(SIZE_MAX);
+        worker_ = std::thread([this]() {
+            HIP_CHECK(hipSetDevice(device_id_));
+            while (!stop_.load(std::memory_order_relaxed)) {
+                size_t free_bytes = 0, total_bytes = 0;
+                if (hipMemGetInfo(&free_bytes, &total_bytes) == hipSuccess) {
+                    size_t prev = min_free_bytes_.load(std::memory_order_relaxed);
+                    while (free_bytes < prev &&
+                           !min_free_bytes_.compare_exchange_weak(prev, free_bytes, std::memory_order_relaxed)) {}
+                }
+                std::this_thread::sleep_for(poll_interval_);
+            }
+        });
+    }
+
+    // Stops polling and returns the minimum free memory (bytes) observed.
+    size_t stop() {
+        stop_.store(true);
+        worker_.join();
+        return min_free_bytes_.load();
+    }
+
+private:
+    std::thread worker_;
+    std::atomic<bool> stop_{false};
+    std::atomic<size_t> min_free_bytes_{SIZE_MAX};
+    int device_id_ = 0;
+    std::chrono::microseconds poll_interval_{1};
 };
 
 // Fills n device doubles: randn when phi < 0, else (rand - 0.5) * exp(randn * phi).
