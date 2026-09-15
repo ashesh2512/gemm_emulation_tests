@@ -48,30 +48,46 @@ The remaining options describe the problem being solved:
 | `--phi=<double>` | 1.0 | Controls the entries of A and B. |
 | `--moduli=<int>` | 2 | Number of moduli used by the Ozaki II methods, `ozablas-ozaki2` and `gemmul8`. |
 | `--splits=<int>` | 2 | Number of splits used by the Ozaki I methods, `cublas-ozaki1` and `ozablas-ozaki1`. |
-| `--no-106bit-ref` | off | Skip the 106 bit reference; only the `diff` line is printed. |
+| `--warmups=<int>` | 2 | Untimed calls run before the timed one, for both native and emulated `gemm`. |
+| `--device=<int>` | 0 | GPU to run on. |
+| `--no-106bit-ref` | off | Skip the 106 bit reference. |
 | `--verify-ref` | off | Sanity-check the 106 bit reference against a host FP128 one and report `ref-diff`. |
 
 `--phi` sets how the random input matrices are generated. A negative value draws every entry from a standard normal distribution. A non-negative value uses `(rand - 0.5) * exp(randn * phi)` instead, so the exponent range of the entries widens as `phi` grows and the emulation has a harder time matching FP64. The seed is fixed in the code, so repeated runs with the same options give the same matrices.
 
 The reference is a double-double matrix multiply on the GPU, carrying about 106 mantissa bits, so it is accurate to far more digits than FP64 can represent. The native `dgemm` and the chosen method are both measured against it, as a relative Frobenius norm and as the worst single element:
 ```
-./gemm_test --method=gemmul8 --m=1024 --n=1024 --k=1024 --phi=2.0 --moduli=3
+./gemm_test --method=cublas-ozaki1 --m=10240 --n=10240 --k=10240 --phi=4.0
 ```
-The run first echoes the settings, the accuracy knob the selected method was driven by, and the time for each `dgemm`, then prints the error table:
+The output has three sections:
 ```
-                             relative      max
-64 bit native vs 106 bit   = 1.041317e-15  1.131069e-09
-64 bit emulated vs 106 bit = 5.097529e-13  3.970221e-06
-diff                       = 5.097528e-13  3.969089e-06
-```
-The first row is the error of the vendor FP64 `dgemm` against the 106 bit reference, the second the error of the selected method against the same reference, and `diff` compares the two FP64 results against each other without involving the reference at all.
+Run
+  method            : cublas-ozaki1
+  m, n, k           : 10240, 10240, 10240
+  phi               : 4
+  warmups           : 2
 
-`--no-106bit-ref` skips the reference altogether. It is a full double-double `gemm`, so on large problems it costs far more than the two `dgemm` calls being measured.
+Errors
+                                  rel-frob  max-rel-elem
+  64 bit native vs 106 bit    1.568254e-15  1.442610e-07
+  64 bit emulated vs 106 bit  6.816338e-17  9.025597e-15
+  emulated vs native          1.587247e-15  1.442610e-07
+
+Performance
+  time   [ms] (native | emulated) :  49.046 | 220.925
+  memory [GB] (native | emulated) :   4.528 |   6.966
+  energy [J]  (native | emulated) : 277.396 | 118.914
+```
+`Run` echoes the settings. It also prints a `note` line if the native `dgemm` was itself served by cuBLAS emulation, which is the check that the two runs really are different.
+
+`Errors` gives the error of the vendor FP64 `dgemm` against the 106 bit reference, the error of the selected method against the same reference, and finally the two FP64 results against each other without involving the reference at all. `rel-frob` is the relative Frobenius norm of the difference, `max-rel-elem` the worst single element.
+
+`Performance` compares the native and emulated runs. `time` is the timed call in milliseconds after `--warmups` untimed calls; `memory` is the peak device memory in use during the run, sampled by polling free memory, so a workspace allocated and freed inside one call may be missed; `energy` is read from the on-board counter, NVML on NVIDIA and ROCm SMI on AMD, divided by the number of calls, and reads `n/a` where the counter is unavailable.
+
+`--no-106bit-ref` skips the reference altogether, leaving only the `emulated vs native` row. It is a full double-double `gemm`, so on large problems it costs far more than the two `dgemm` calls being measured.
 ```
 ./gemm_test --no-106bit-ref ...
 ```
-
-The `accuracy` line reports whichever knob actually governs the selected method, since the methods do not share one. For `native` and `cublas-ozaki1` it is the mantissa bit count cuBLAS was configured with for the native and emulated calls, where `-1` means the query was unavailable, i.e. plain FP64 ran; this is the check that the emulated path was really taken. For `ozablas-ozaki1` it is `--splits`, and for the Ozaki II methods `ozablas-ozaki2` and `gemmul8` it is `--moduli`. Those methods never report a mantissa count. The `time` line reports one warm run of each in milliseconds.
 
 `--verify-ref` sanity-checks the reference itself. A and B are copied back to the host, the FP128 reference runs there under OpenMP, and the extra `ref-diff` line reports how far the two references are apart. The host result is never used to score the two `dgemm` calls; it exists only to confirm the 106 bit reference is trustworthy, so `--verify-ref` needs the reference and is rejected together with `--no-106bit-ref`:
 ```

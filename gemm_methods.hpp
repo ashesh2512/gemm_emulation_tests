@@ -134,6 +134,20 @@ private:
     std::chrono::microseconds poll_interval_{1};
 };
 
+// Reads the cumulative on-board energy counter (NVML on NVIDIA, ROCm SMI on
+// AMD), so no sampling is needed. Both counters are device wide, not per process.
+class EnergyMonitor {
+ public:
+  void start(int device_id);
+
+  // Joules since start(), or -1 when the device exposes no energy counter.
+  double stop();
+
+ private:
+  int device_id_ = 0;
+  double start_joules_ = -1.0;
+};
+
 // Fills n device doubles: randn when phi < 0, else (rand - 0.5) * exp(randn * phi).
 // Larger phi widens the exponent range and makes the emulated gemm harder.
 void fill_random(double *x, size_t n, double phi, unsigned long long seed);
