@@ -159,6 +159,11 @@ int main(int argc, char **argv) try {
   printf("  method            : %s\n", method_name(method));
   printf("  m, n, k           : %d, %d, %d\n", p.m, p.n, p.k);
   printf("  phi               : %g\n", phi);
+  // Ozaki I is parameterised by splits, Ozaki II by moduli; native uses neither.
+  if (method == Method::CublasOzaki1 || method == Method::OzablasOzaki1)
+    printf("  splits            : %d\n", p.num_splits);
+  else if (method == Method::OzablasOzaki2 || method == Method::Gemmul8)
+    printf("  moduli            : %d\n", p.num_moduli);
   printf("  warmups           : %d\n", warmups);
   if (native_bits > -1)
     printf("  note              : native GEMM call used cuBLAS emulation\n");
@@ -189,13 +194,13 @@ int main(int argc, char **argv) try {
       : 0.0;
 
   printf("\nPerformance\n");
-  printf("  time   [ms] (native | emulated) : %7.3f | %7.3f\n", native_ms, emulated_ms);
-  printf("  memory [GB] (native | emulated) : %7.3f | %7.3f\n", native_peak_bytes / gb,
+  printf("  time   [ms] (native | emulated) : %10.3f | %10.3f\n", native_ms, emulated_ms);
+  printf("  memory [GB] (native | emulated) : %10.3f | %10.3f\n", native_peak_bytes / gb,
                                                                  emulated_peak_bytes / gb);
   if (native_j >= 0.0 && emulated_j >= 0.0)
-    printf("  energy [J]  (native | emulated) : %7.3f | %7.3f\n", native_j, emulated_j);
+    printf("  energy [J]  (native | emulated) : %10.3f | %10.3f\n", native_j, emulated_j);
   else
-    printf("  energy [J]  (native | emulated) : %7s | %7s\n", "n/a", "n/a");
+    printf("  energy [J]  (native | emulated) : %10s | %10s\n", "n/a", "n/a");
 
   if (use_ref) HIP_CHECK(hipFree(C_exact));
   HIP_CHECK(hipFree(C_native));
