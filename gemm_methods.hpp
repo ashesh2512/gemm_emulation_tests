@@ -90,6 +90,9 @@ struct Problem {
   int num_moduli = 2;      // Ozaki II
   int num_splits = 2;      // Ozaki I
   bool fastmode  = false;  // Ozaki II
+
+  // cuBLAS Ozaki I: ignore num_splits and let cuBLAS pick the mantissa bit count.
+  bool auto_mantissa = false;
 };
 
 // Polls hipMemGetInfo() from a background host thread to catch transient
@@ -180,6 +183,9 @@ void set_fp64_emulation_gate(bool enabled);
 
 // Mantissa bits the last gemm_run() retained, or -1 when it was not emulated.
 int emulation_mantissa_bits();
+
+// Splits cuBLAS breaks each operand into for the given mantissa bit count.
+int emulation_splits(int mantissa_bits);
 
 // Computes C. Any scratch memory the method needs is allocated and freed inside.
 void gemm_run(Method method, hipblasHandle_t handle, const Problem &p);

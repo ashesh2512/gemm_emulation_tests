@@ -48,6 +48,7 @@ The remaining options describe the problem being solved:
 | `--phi=<double>` | 1.0 | Controls the entries of A and B. |
 | `--moduli=<int>` | 2 | Number of moduli used by the Ozaki II methods, `ozablas-ozaki2` and `gemmul8`. |
 | `--splits=<int>` | 2 | Number of splits used by the Ozaki I methods, `cublas-ozaki1` and `ozablas-ozaki1`. |
+| `--auto-mantissa` | off | `cublas-ozaki1` only: ignore `--splits` and let cuBLAS pick the mantissa bit count itself. |
 | `--warmups=<int>` | 2 | Untimed calls run before the timed one, for both native and emulated `gemm`. |
 | `--device=<int>` | 0 | GPU to run on. |
 | `--no-106bit-ref` | off | Skip the 106 bit reference. |

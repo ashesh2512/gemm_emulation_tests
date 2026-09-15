@@ -57,6 +57,7 @@ int main(int argc, char **argv) try {
     else if (strncmp(argv[i], "--splits=", 9) == 0) p.num_splits = atoi(argv[i] + 9);
     else if (strncmp(argv[i], "--warmups=", 10) == 0) warmups = atoi(argv[i] + 10);
     else if (strncmp(argv[i], "--device=", 9) == 0) device = atoi(argv[i] + 9);
+    else if (strcmp(argv[i], "--auto-mantissa") == 0) p.auto_mantissa = true;
     else if (strcmp(argv[i], "--no-106bit-ref") == 0) use_ref = false;
     else if (strcmp(argv[i], "--verify-ref") == 0) verify_ref = true;
     else throw std::invalid_argument(std::string("unknown option '") + argv[i] + "'");
@@ -73,6 +74,8 @@ int main(int argc, char **argv) try {
   if (verify_ref && !use_ref)
     throw std::invalid_argument("--verify-ref checks the 106 bit reference, so it "
                                 "cannot be used with --no-106bit-ref");
+  if (p.auto_mantissa && method != Method::CublasOzaki1)
+    throw std::invalid_argument("--auto-mantissa only applies to cublas-ozaki1");
 
   set_fp64_emulation_gate(method == Method::CublasOzaki1);
 
@@ -155,18 +158,28 @@ int main(int argc, char **argv) try {
 
   const size_t emulated_min_free_bytes = emulated_mem.stop();
 
+  // cuBLAS picked the bit count itself whenever the count was not pinned.
+  const int emulated_bits = emulation_mantissa_bits();
+
   printf("Run\n");
   printf("  method            : %s\n", method_name(method));
   printf("  m, n, k           : %d, %d, %d\n", p.m, p.n, p.k);
   printf("  phi               : %g\n", phi);
   // Ozaki I is parameterised by splits, Ozaki II by moduli; native uses neither.
-  if (method == Method::CublasOzaki1 || method == Method::OzablasOzaki1)
+  if (method == Method::CublasOzaki1 && p.auto_mantissa)
+    printf("  splits            : auto\n");
+  else if (method == Method::CublasOzaki1 || method == Method::OzablasOzaki1)
     printf("  splits            : %d\n", p.num_splits);
   else if (method == Method::OzablasOzaki2 || method == Method::Gemmul8)
     printf("  moduli            : %d\n", p.num_moduli);
   printf("  warmups           : %d\n", warmups);
   if (native_bits > -1)
-    printf("  note              : native GEMM call used cuBLAS emulation\n");
+    printf("  note              : native GEMM call used cuBLAS emulation, "
+           "cuBLAS chose %d splits\n",
+           emulation_splits(native_bits));
+  if (p.auto_mantissa && method == Method::CublasOzaki1 && emulated_bits > -1)
+    printf("  note              : cuBLAS chose %d splits\n",
+           emulation_splits(emulated_bits));
 
   printf("\nErrors\n");
   printf("  %-26s  %12s  %12s\n", "", "rel-frob", "max-rel-elem");

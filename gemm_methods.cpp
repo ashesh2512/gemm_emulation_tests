@@ -284,10 +284,10 @@ namespace {
 
 int *d_mantissa_bits = nullptr;
 
-// mantissa_bits <= 0 selects the strategy under which cuBLAS declines to emulate on
-// FP64-strong parts; there is no API that disables emulation outright.
+// mantissa_bits == 0 selects the strategy under which cuBLAS declines to emulate
+// mantissa_bits < 0 emulates but leaves the bit count entirely to cuBLAS.
 void set_fp64_emulation(cublasHandle_t handle, int mantissa_bits) {
-  const bool off = mantissa_bits <= 0;
+  const bool off = mantissa_bits == 0;
 
   if (d_mantissa_bits == nullptr)
     cudaMalloc(reinterpret_cast<void **>(&d_mantissa_bits), sizeof(int));
@@ -297,13 +297,13 @@ void set_fp64_emulation(cublasHandle_t handle, int mantissa_bits) {
   cublasSetEmulationStrategy(handle, off ? CUBLAS_EMULATION_STRATEGY_DEFAULT
                                          : CUBLAS_EMULATION_STRATEGY_EAGER);
 
-  if (off) {
-    cublasSetFixedPointEmulationMantissaControl(
-        handle, CUDA_EMULATION_MANTISSA_CONTROL_DYNAMIC);
-  } else {
+  if (mantissa_bits > 0) {
     cublasSetFixedPointEmulationMantissaControl(
         handle, CUDA_EMULATION_MANTISSA_CONTROL_FIXED);
     cublasSetFixedPointEmulationMaxMantissaBitCount(handle, mantissa_bits);
+  } else {
+    cublasSetFixedPointEmulationMantissaControl(
+        handle, CUDA_EMULATION_MANTISSA_CONTROL_DYNAMIC);
   }
 }
 
@@ -328,6 +328,10 @@ int emulation_mantissa_bits() {
 #endif
 }
 
+int emulation_splits(int mantissa_bits) {
+  return mantissa_bits < 0 ? -1 : (mantissa_bits + 1 + 7) / 8;
+}
+
 void gemm_run(Method method, hipblasHandle_t handle, const Problem &p) {
   switch (method) {
 
@@ -342,8 +346,8 @@ void gemm_run(Method method, hipblasHandle_t handle, const Problem &p) {
 
 #if defined(HAVE_CUBLAS_OZAKI1) && !defined(__HIP_PLATFORM_AMD__)
     case Method::CublasOzaki1: {
-      // sliceCount = ceildiv(mantissaBitCount + 1, 8), so this pins num_splits slices.
-      set_fp64_emulation(handle, 8 * p.num_splits - 1);
+      // splitCount = ceildiv(mantissaBitCount + 1, 8), so this pins num_splits splits.
+      set_fp64_emulation(handle, p.auto_mantissa ? -1 : 8 * p.num_splits - 1);
 
       cublasGemmEx(handle, p.transa, p.transb, p.m, p.n, p.k,
                    &p.alpha, p.A, CUDA_R_64F, p.lda,
