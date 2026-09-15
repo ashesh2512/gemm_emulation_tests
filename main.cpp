@@ -202,9 +202,6 @@ int main(int argc, char **argv) try {
   const size_t native_peak_bytes   = total_bytes - native_min_free_bytes;
   const size_t emulated_peak_bytes = total_bytes - emulated_min_free_bytes;
   const double gb = 1024.0 * 1024.0 * 1024.0;
-  const double overhead_gb = emulated_peak_bytes > native_peak_bytes
-      ? (emulated_peak_bytes - native_peak_bytes) / gb
-      : 0.0;
 
   printf("\nPerformance\n");
   printf("  time   [ms] (native | emulated) : %10.3f | %10.3f\n", native_ms, emulated_ms);

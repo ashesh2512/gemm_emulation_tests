@@ -284,7 +284,8 @@ namespace {
 
 int *d_mantissa_bits = nullptr;
 
-// mantissa_bits == 0 selects the strategy under which cuBLAS declines to emulate
+// mantissa_bits == 0 asks for the default strategy, which still emulates whenever
+// cuBLAS judges it profitable; only CUBLAS_EMULATE_DOUBLE_PRECISION=0 rules it out.
 // mantissa_bits < 0 emulates but leaves the bit count entirely to cuBLAS.
 void set_fp64_emulation(cublasHandle_t handle, int mantissa_bits) {
   const bool off = mantissa_bits == 0;
