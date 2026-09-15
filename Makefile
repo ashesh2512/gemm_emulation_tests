@@ -103,7 +103,7 @@ export PATH := $(HIP_PATH)/bin:$(PATH)
 export LD_LIBRARY_PATH := $(HIP_PATH)/lib:$(LD_LIBRARY_PATH)
 
 COMPILER := hipcc
-LIBS := -lamd_smi -lamdhip64 -lhipblas -lhipblaslt -lhiprand -ldl
+LIBS := -lamd_smi -lrocm_smi64 -lamdhip64 -lhipblas -lhipblaslt -lhiprand -ldl
 FLAGS := -std=c++20 -O3
 FLAGS += -ffp-contract=off
 FLAGS += -fopenmp

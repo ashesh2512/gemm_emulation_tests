@@ -1,5 +1,11 @@
 #include "gemm_methods.hpp"
 
+#if defined(__HIPCC__) || defined(__HIP_PLATFORM_AMD__)
+  #include <rocm_smi/rocm_smi.h>
+#else
+  #include <nvml.h>
+#endif
+
 #if defined(HAVE_GEMMUL8)
   #include <gemmul8.hpp>
 #endif
@@ -169,6 +175,49 @@ void gemm_ref_gpu(int m, int n, int k, const double *A, const double *B, double 
   const dim3 block(16, 16);
   const dim3 grid((m + block.x - 1) / block.x, (n + block.y - 1) / block.y);
   gemm_ref_kernel<<<grid, block>>>(m, n, k, A, B, C);
+}
+
+namespace {
+
+// Cumulative joules on the given device, or -1 when the counter is unavailable.
+double device_energy_joules(int device_id) {
+#if defined(__HIPCC__) || defined(__HIP_PLATFORM_AMD__)
+  static const bool ready = rsmi_init(0) == RSMI_STATUS_SUCCESS;
+  if (!ready) return -1.0;
+
+  uint64_t count = 0, timestamp = 0;
+  float resolution = 0.0f;
+  if (rsmi_dev_energy_count_get(device_id, &count, &resolution, &timestamp) != RSMI_STATUS_SUCCESS)
+    return -1.0;
+
+  // count is in units of resolution microjoules.
+  return count * double(resolution) * 1e-6;
+#else
+  static const bool ready = nvmlInit() == NVML_SUCCESS;
+  if (!ready) return -1.0;
+
+  nvmlDevice_t device;
+  if (nvmlDeviceGetHandleByIndex_v2(device_id, &device) != NVML_SUCCESS) return -1.0;
+
+  unsigned long long millijoules = 0;
+  if (nvmlDeviceGetTotalEnergyConsumption(device, &millijoules) != NVML_SUCCESS)
+    return -1.0;
+
+  return millijoules * 1e-3;
+#endif
+}
+
+}  // namespace
+
+void EnergyMonitor::start(int device_id) {
+  device_id_ = device_id;
+  start_joules_ = device_energy_joules(device_id_);
+}
+
+double EnergyMonitor::stop() {
+  const double end_joules = device_energy_joules(device_id_);
+  if (start_joules_ < 0.0 || end_joules < 0.0) return -1.0;
+  return end_joules - start_joules_;
 }
 
 const char *method_name(Method method) {
