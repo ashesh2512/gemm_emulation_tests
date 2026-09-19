@@ -169,12 +169,31 @@ __global__ void gemm_ref_kernel(int m, int n, int k, const double *A, const doub
   C[size_t(j) * m + i] = __dadd_rn(hi, lo);
 }
 
+__global__ void gemm_fp64_kernel(int m, int n, int k, const double *A, const double *B,
+                                 double *C) {
+  const int i = blockIdx.x * blockDim.x + threadIdx.x;
+  const int j = blockIdx.y * blockDim.y + threadIdx.y;
+  if (i >= m || j >= n) return;
+
+  double acc = 0.0;
+  for (int l = 0; l < k; ++l)
+    acc = __fma_rn(A[size_t(l) * m + i], B[size_t(j) * k + l], acc);
+
+  C[size_t(j) * m + i] = acc;
+}
+
 }  // namespace
 
 void gemm_ref_gpu(int m, int n, int k, const double *A, const double *B, double *C) {
   const dim3 block(16, 16);
   const dim3 grid((m + block.x - 1) / block.x, (n + block.y - 1) / block.y);
   gemm_ref_kernel<<<grid, block>>>(m, n, k, A, B, C);
+}
+
+void gemm_fp64_gpu(int m, int n, int k, const double *A, const double *B, double *C) {
+  const dim3 block(16, 16);
+  const dim3 grid((m + block.x - 1) / block.x, (n + block.y - 1) / block.y);
+  gemm_fp64_kernel<<<grid, block>>>(m, n, k, A, B, C);
 }
 
 namespace {

@@ -144,6 +144,13 @@ int main(int argc, char **argv) try {
   // this is used to determine if native GEMM call actually ran an emulation
   const int native_bits = emulation_mantissa_bits();
 
+  // Only when the vendor dgemm emulated is its result not FP64, so only then is
+  // it replaced by a hand written FP64 kernel for the error table.
+  if (native_bits > -1) {
+    gemm_fp64_gpu(p.m, p.n, p.k, A, B, C_native);
+    hipDeviceSynchronize();
+  }
+
   p.C = C;
 
   MemoryHighWaterMonitor emulated_mem;
@@ -155,7 +162,6 @@ int main(int argc, char **argv) try {
   const double emulated_j = emulated_energy.stop() / (warmups+1);
 
   hipDeviceSynchronize();
-
   const size_t emulated_min_free_bytes = emulated_mem.stop();
 
   // cuBLAS picked the bit count itself whenever the count was not pinned.
@@ -175,7 +181,8 @@ int main(int argc, char **argv) try {
   printf("  warmups           : %d\n", warmups);
   if (native_bits > -1)
     printf("  note              : native GEMM call used cuBLAS emulation, "
-           "cuBLAS chose %d splits\n",
+           "cuBLAS chose %d splits; native error is computed with a hand written "
+           "FP64 kernel and native performance is reported as n/a\n",
            emulation_splits(native_bits));
   if (p.auto_mantissa && method == Method::CublasOzaki1 && emulated_bits > -1)
     printf("  note              : cuBLAS chose %d splits\n",
@@ -204,13 +211,24 @@ int main(int argc, char **argv) try {
   const double gb = 1024.0 * 1024.0 * 1024.0;
 
   printf("\nPerformance\n");
-  printf("  time   [ms] (native | emulated) : %10.3f | %10.3f\n", native_ms, emulated_ms);
-  printf("  memory [GB] (native | emulated) : %10.3f | %10.3f\n", native_peak_bytes / gb,
+  // A native call that emulated says nothing about native cost.
+  const bool native_perf = native_bits <= -1;
+  if (native_perf)
+    printf("  time   [ms] (native | emulated) : %10.3f | %10.3f\n", native_ms, emulated_ms);
+  else
+    printf("  time   [ms] (native | emulated) : %10s | %10.3f\n", "n/a", emulated_ms);
+
+  if (native_perf)
+    printf("  memory [GB] (native | emulated) : %10.3f | %10.3f\n", native_peak_bytes / gb,
+                                                                   emulated_peak_bytes / gb);
+  else
+    printf("  memory [GB] (native | emulated) : %10s | %10.3f\n", "n/a",
                                                                  emulated_peak_bytes / gb);
-  if (native_j >= 0.0 && emulated_j >= 0.0)
+
+  if (native_perf)
     printf("  energy [J]  (native | emulated) : %10.3f | %10.3f\n", native_j, emulated_j);
   else
-    printf("  energy [J]  (native | emulated) : %10s | %10s\n", "n/a", "n/a");
+    printf("  energy [J]  (native | emulated) : %10s | %10.3f\n", "n/a", emulated_j);
 
   if (use_ref) HIP_CHECK(hipFree(C_exact));
   HIP_CHECK(hipFree(C_native));

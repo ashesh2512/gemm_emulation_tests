@@ -169,6 +169,9 @@ void gemm_ref(int m, int n, int k, const double *A, const double *B, double *C);
 // accumulation (~106 mantissa bits). This is the reference every run uses.
 void gemm_ref_gpu(int m, int n, int k, const double *A, const double *B, double *C);
 
+// This stands in for the native result in the error table, because a vendor dgemm may emulate.
+void gemm_fp64_gpu(int m, int n, int k, const double *A, const double *B, double *C);
+
 const char *method_name(Method method);
 
 // Throws std::invalid_argument listing the accepted names when there is no match.
