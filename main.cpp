@@ -8,8 +8,28 @@
 
 namespace {
 
+struct RunResult {
+  float ms;
+  size_t peak_bytes;
+  double joules;
+  int mantissa_bits;  // -1 when the call was not emulated
+};
+
 // The first call pays for lazy module loading, so only the last one is timed.
-float time_gemm(Method method, hipblasHandle_t handle, const Problem &p, int warmups) {
+// Memory is polled rather than snapshotted because a workspace allocated and
+// freed inside a single call would be invisible to a before/after pair.
+RunResult measure(Method method, hipblasHandle_t handle, const Problem &p, int warmups,
+                  int device) {
+  // hipMemGetInfo needs both out-pointers, but only the device wide total is used.
+  size_t free_bytes = 0, total_bytes = 0;
+  HIP_CHECK(hipMemGetInfo(&free_bytes, &total_bytes));
+
+  MemoryHighWaterMonitor mem;
+  mem.start(device);
+
+  EnergyMonitor energy;
+  energy.start(device);
+
   hipEvent_t t0, t1;
   hipEventCreate(&t0);
   hipEventCreate(&t1);
@@ -21,11 +41,19 @@ float time_gemm(Method method, hipblasHandle_t handle, const Problem &p, int war
   hipEventRecord(t1, 0);
   hipEventSynchronize(t1);
 
-  float ms = 0.0f;
-  hipEventElapsedTime(&ms, t0, t1);
+  RunResult r;
+  hipEventElapsedTime(&r.ms, t0, t1);
   hipEventDestroy(t0);
   hipEventDestroy(t1);
-  return ms;
+
+  r.joules = energy.stop() / (warmups+1);
+
+  hipDeviceSynchronize();
+  // Least free memory seen is most memory in use, so the peak inverts the sample.
+  r.peak_bytes = total_bytes - mem.stop();
+
+  r.mantissa_bits = emulation_mantissa_bits();
+  return r;
 }
 
 }  // namespace
@@ -123,49 +151,17 @@ int main(int argc, char **argv) try {
   }
 
   p.A = A; p.B = B; p.C = C_native;
-
-  // total_bytes is a device constant, so one read serves both runs below.
-  size_t free_bytes = 0, total_bytes = 0;
-  HIP_CHECK(hipMemGetInfo(&free_bytes, &total_bytes));
-
-  // Both gemms are polled the same way; a workspace allocated and freed inside a
-  // single call is invisible to a before/after snapshot.
-  MemoryHighWaterMonitor native_mem;
-  native_mem.start(device);
-
-  EnergyMonitor native_energy;
-  native_energy.start(device);
-  const float native_ms = time_gemm(Method::Native, handle, p, warmups);
-  const double native_j = native_energy.stop() / (warmups+1);
-
-  hipDeviceSynchronize();
-  const size_t native_min_free_bytes = native_mem.stop();
-
-  // this is used to determine if native GEMM call actually ran an emulation
-  const int native_bits = emulation_mantissa_bits();
+  const RunResult native = measure(Method::Native, handle, p, warmups, device);
 
   // Only when the vendor dgemm emulated is its result not FP64, so only then is
   // it replaced by a hand written FP64 kernel for the error table.
-  if (native_bits > -1) {
+  if (native.mantissa_bits > -1) {
     gemm_fp64_gpu(p.m, p.n, p.k, A, B, C_native);
     hipDeviceSynchronize();
   }
 
   p.C = C;
-
-  MemoryHighWaterMonitor emulated_mem;
-  emulated_mem.start(device);
-
-  EnergyMonitor emulated_energy;
-  emulated_energy.start(device);
-  const float emulated_ms = time_gemm(method, handle, p, warmups);
-  const double emulated_j = emulated_energy.stop() / (warmups+1);
-
-  hipDeviceSynchronize();
-  const size_t emulated_min_free_bytes = emulated_mem.stop();
-
-  // cuBLAS picked the bit count itself whenever the count was not pinned.
-  const int emulated_bits = emulation_mantissa_bits();
+  const RunResult emulated = measure(method, handle, p, warmups, device);
 
   printf("Run\n");
   printf("  method            : %s\n", method_name(method));
@@ -179,14 +175,15 @@ int main(int argc, char **argv) try {
   else if (method == Method::OzablasOzaki2 || method == Method::Gemmul8)
     printf("  moduli            : %d\n", p.num_moduli);
   printf("  warmups           : %d\n", warmups);
-  if (native_bits > -1)
+  if (native.mantissa_bits > -1)
     printf("  note              : native GEMM call used cuBLAS emulation, "
            "cuBLAS chose %d splits; native error is computed with a hand written "
            "FP64 kernel and native performance is reported as n/a\n",
-           emulation_splits(native_bits));
-  if (p.auto_mantissa && method == Method::CublasOzaki1 && emulated_bits > -1)
+           emulation_splits(native.mantissa_bits));
+  // cuBLAS picked the bit count itself whenever the count was not pinned.
+  if (p.auto_mantissa && method == Method::CublasOzaki1 && emulated.mantissa_bits > -1)
     printf("  note              : cuBLAS chose %d splits\n",
-           emulation_splits(emulated_bits));
+           emulation_splits(emulated.mantissa_bits));
 
   printf("\nErrors\n");
   printf("  %-26s  %12s  %12s\n", "", "rel-frob", "max-rel-elem");
@@ -205,30 +202,27 @@ int main(int argc, char **argv) try {
   if (verify_ref)
     printf("  %-26s  %12e  %12e\n", "ref-diff", verify_norm, verify_max);
 
-  // Least free memory seen is most memory in use, so the peaks invert the samples.
-  const size_t native_peak_bytes   = total_bytes - native_min_free_bytes;
-  const size_t emulated_peak_bytes = total_bytes - emulated_min_free_bytes;
   const double gb = 1024.0 * 1024.0 * 1024.0;
 
   printf("\nPerformance\n");
   // A native call that emulated says nothing about native cost.
-  const bool native_perf = native_bits <= -1;
+  const bool native_perf = native.mantissa_bits <= -1;
   if (native_perf)
-    printf("  time   [ms] (native | emulated) : %10.3f | %10.3f\n", native_ms, emulated_ms);
+    printf("  time   [ms] (native | emulated) : %10.3f | %10.3f\n", native.ms, emulated.ms);
   else
-    printf("  time   [ms] (native | emulated) : %10s | %10.3f\n", "n/a", emulated_ms);
+    printf("  time   [ms] (native | emulated) : %10s | %10.3f\n", "n/a", emulated.ms);
 
   if (native_perf)
-    printf("  memory [GB] (native | emulated) : %10.3f | %10.3f\n", native_peak_bytes / gb,
-                                                                   emulated_peak_bytes / gb);
+    printf("  memory [GB] (native | emulated) : %10.3f | %10.3f\n", native.peak_bytes / gb,
+                                                                   emulated.peak_bytes / gb);
   else
     printf("  memory [GB] (native | emulated) : %10s | %10.3f\n", "n/a",
-                                                                 emulated_peak_bytes / gb);
+                                                                 emulated.peak_bytes / gb);
 
   if (native_perf)
-    printf("  energy [J]  (native | emulated) : %10.3f | %10.3f\n", native_j, emulated_j);
+    printf("  energy [J]  (native | emulated) : %10.3f | %10.3f\n", native.joules, emulated.joules);
   else
-    printf("  energy [J]  (native | emulated) : %10s | %10.3f\n", "n/a", emulated_j);
+    printf("  energy [J]  (native | emulated) : %10s | %10.3f\n", "n/a", emulated.joules);
 
   if (use_ref) HIP_CHECK(hipFree(C_exact));
   HIP_CHECK(hipFree(C_native));

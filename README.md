@@ -79,11 +79,11 @@ Performance
   memory [GB] (native | emulated) :   4.528 |   6.966
   energy [J]  (native | emulated) : 277.396 | 118.914
 ```
-`Run` echoes the settings. It also prints a `note` line if the native `dgemm` was itself served by cuBLAS emulation, which is the check that the two runs really are different.
+`Run` echoes the settings. It also prints a `note` line if the native `dgemm` was itself served by cuBLAS emulation, in which case the native error comes from a hand written FP64 kernel and the native performance columns read `n/a`.
 
-`Errors` gives the error of the vendor FP64 `dgemm` against the 106 bit reference, the error of the selected method against the same reference, and finally the two FP64 results against each other without involving the reference at all. `rel-frob` is the relative Frobenius norm of the difference, `max-rel-elem` the worst single element.
+`Errors` gives the error of the native FP64 `dgemm` against the 106 bit reference, the error of the selected method against the same reference, and finally the two FP64 results against each other without involving the reference at all. `rel-frob` is the relative Frobenius norm of the difference, `max-rel-elem` the worst single element. If the vendor `dgemm` emulated, a hand written FP64 kernel stands in for it so the native row still describes FP64.
 
-`Performance` compares the native and emulated runs. `time` is the timed call in milliseconds after `--warmups` untimed calls; `memory` is the peak device memory in use during the run, sampled by polling free memory, so a workspace allocated and freed inside one call may be missed; `energy` is read from the on-board counter, NVML on NVIDIA and ROCm SMI on AMD, divided by the number of calls, and reads `n/a` where the counter is unavailable.
+`Performance` compares the native and emulated runs. `time` is the timed call in milliseconds after `--warmups` untimed calls; `memory` is the peak device memory in use during the run, sampled by polling free memory, so a workspace allocated and freed inside one call may be missed; `energy` is read from the on-board counter, NVML on NVIDIA and ROCm SMI on AMD, divided by the number of calls. All three native columns read `n/a` when the native `dgemm` emulated.
 
 `--no-106bit-ref` skips the reference altogether, leaving only the `emulated vs native` row. It is a full double-double `gemm`, so on large problems it costs far more than the two `dgemm` calls being measured.
 ```
@@ -111,12 +111,12 @@ cuBLAS turns FP64 emulation on and off through the environment variable `CUBLAS_
 
 A: guaranteed-native baseline, `CUBLAS_EMULATE_DOUBLE_PRECISION=0`:
 ```
-OMP_NUM_THREADS=64 ~/cudevmap.sh ./gemm_test --method=native --m=10240 --n=10240 --k=10240 --phi=4.0
+~/cudevmap.sh ./gemm_test --method=native --m=10240 --n=10240 --k=10240 --phi=4.0
 ```
 
 B: the emulated run, `CUBLAS_EMULATE_DOUBLE_PRECISION=1`:
 ```
-OMP_NUM_THREADS=64 ~/cudevmap.sh ./gemm_test --method=cublas-ozaki1 --m=10240 --n=10240 --k=10240 --phi=4.0 --splits=10
+~/cudevmap.sh ./gemm_test --method=cublas-ozaki1 --m=10240 --n=10240 --k=10240 --phi=4.0 --splits=10
 ```
 
 ### Pinoak (AMD MI250X, `gfx90a`)
@@ -133,5 +133,5 @@ make -j BACKEND=hip HIP_PATH=/opt/rocm-7.2.0 GPU_ARCH=gfx90a HAVE_GEMMUL8=1 HAVE
 
 `~/rocrmap.sh` is the ROCm equivalent bash script for CPU-GPU affinity:
 ```
-OMP_NUM_THREADS=64 ~/rocrmap.sh ./gemm_test --method=ozablas-ozaki1 --m=10240 --n=10240 --k=10240 --phi=4.0 --splits=10
+~/rocrmap.sh ./gemm_test --method=ozablas-ozaki1 --m=10240 --n=10240 --k=10240 --phi=4.0 --splits=10
 ```
