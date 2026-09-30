@@ -1,6 +1,8 @@
 #include "gemm_methods.hpp"
 
-#if defined(__HIPCC__) || defined(__HIP_PLATFORM_AMD__)
+#if defined(USE_AMD_SMI)
+  #include <amd_smi/amdsmi.h>
+#elif defined(USE_ROCM_SMI)
   #include <rocm_smi/rocm_smi.h>
 #else
   #include <nvml.h>
@@ -198,9 +200,39 @@ void gemm_fp64_gpu(int m, int n, int k, const double *A, const double *B, double
 
 namespace {
 
+#if defined(USE_AMD_SMI)
+// rocrmap.sh leaves exactly one GPU visible, so it is always socket 0, processor 0.
+amdsmi_processor_handle amd_smi_gpu() {
+  static amdsmi_processor_handle gpu = [] {
+    amdsmi_processor_handle handle = nullptr;
+    if (amdsmi_init(AMDSMI_INIT_AMD_GPUS) != AMDSMI_STATUS_SUCCESS) return handle;
+
+    uint32_t count = 1;
+    amdsmi_socket_handle socket = nullptr;
+    if (amdsmi_get_socket_handles(&count, &socket) != AMDSMI_STATUS_SUCCESS) return handle;
+
+    count = 1;
+    amdsmi_get_processor_handles(socket, &count, &handle);
+    return handle;
+  }();
+  return gpu;
+}
+#endif
+
 // Cumulative joules on the given device, or -1 when the counter is unavailable.
 double device_energy_joules(int device_id) {
-#if defined(__HIPCC__) || defined(__HIP_PLATFORM_AMD__)
+#if defined(USE_AMD_SMI)
+  if (amd_smi_gpu() == nullptr) return -1.0;
+
+  uint64_t count = 0, timestamp = 0;
+  float resolution = 0.0f;
+  if (amdsmi_get_energy_count(amd_smi_gpu(), &count, &resolution, &timestamp) !=
+      AMDSMI_STATUS_SUCCESS)
+    return -1.0;
+
+  // count is in units of resolution microjoules.
+  return count * double(resolution) * 1e-6;
+#elif defined(USE_ROCM_SMI)
   static const bool ready = rsmi_init(0) == RSMI_STATUS_SUCCESS;
   if (!ready) return -1.0;
 

@@ -16,6 +16,10 @@ HAVE_CUBLAS_OZAKI1 ?= 0
 # Restrict GEMMul8 explicit instantiations to INT8.
 INT8_ONLY ?= 1
 
+# Read GPU energy through amd_smi instead of rocm_smi (HIP only). rocm_smi's
+# energy counter is unavailable on newer AMD GPUs.
+USE_AMD_SMI ?= 0
+
 # Host C++ compiler; must support C++20 (<bit>, <numbers>, ...).
 HOST_CXX ?= g++-14
 
@@ -103,10 +107,17 @@ export PATH := $(HIP_PATH)/bin:$(PATH)
 export LD_LIBRARY_PATH := $(HIP_PATH)/lib:$(LD_LIBRARY_PATH)
 
 COMPILER := hipcc
-# Only rocm_smi is used (rsmi_*); linking amd_smi too pulls in a second SMI
-# runtime whose static init crashes before main.
-LIBS := -lrocm_smi64 -lamdhip64 -lhipblas -lhipblaslt -lhiprand -ldl
 FLAGS := -std=c++20 -O3
+# Exactly one SMI runtime is linked; pulling in both leaves a second one whose
+# static init crashes before main.
+ifeq ($(USE_AMD_SMI),1)
+LIBS := -lamd_smi
+FLAGS += -DUSE_AMD_SMI
+else
+LIBS := -lrocm_smi64
+FLAGS += -DUSE_ROCM_SMI
+endif
+LIBS += -lamdhip64 -lhipblas -lhipblaslt -lhiprand -ldl
 FLAGS += -ffp-contract=off
 FLAGS += -fopenmp
 FLAGS += -Wno-unused-result -Wno-unused-command-line-argument -Wno-unused-value
@@ -163,6 +174,7 @@ ifeq ($(BACKEND),cuda)
 endif
 ifeq ($(BACKEND),hip)
 	$(info HIP_PATH     : $(HIP_PATH))
+	$(info USE_AMD_SMI  : $(USE_AMD_SMI))
 endif
 	$(info GPU_ARCH     : $(GPU_ARCH))
 	$(info COMPILER     : $(COMPILER))

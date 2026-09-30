@@ -27,6 +27,7 @@ These are all the variables the Makefile reads; they can be set on the command l
 | `HAVE_OZABLAS` | `0` | never | Set to `1` to build the `external/ozablas` submodule and compile in the `ozablas-ozaki1` and `ozablas-ozaki2` methods. |
 | `HAVE_CUBLAS_OZAKI1` | `0` | never | Set to `1` to compile in the `cublas-ozaki1` method. CUDA only; it compiles out on HIP. |
 | `INT8_ONLY` | `1` | never | Passed to the GEMMul8 submodule. `1` restricts its explicit instantiations to INT8, which builds much faster. |
+| `USE_AMD_SMI` | `0` | never | `BACKEND=hip` only. Set to `1` to read the energy counter through `amd_smi` instead of `rocm_smi`, which is needed on newer AMD GPUs where `rocm_smi` no longer exposes it. |
 
 The submodule locations are currently fixed at `external/GEMMul8` and `external/ozablas` and cannot be pointed elsewhere. The compiler is chosen by the backend, `nvcc` for CUDA and `hipcc` for HIP, and is not overridable.
 
@@ -50,7 +51,6 @@ The remaining options describe the problem being solved:
 | `--splits=<int>` | 2 | Number of splits used by the Ozaki I methods, `cublas-ozaki1` and `ozablas-ozaki1`. |
 | `--auto-mantissa` | off | `cublas-ozaki1` only: ignore `--splits` and let cuBLAS pick the mantissa bit count itself. |
 | `--warmups=<int>` | 2 | Untimed calls run before the timed one, for both native and emulated `gemm`. |
-| `--device=<int>` | 0 | GPU to run on. |
 | `--no-106bit-ref` | off | Skip the 106 bit reference. |
 | `--verify-ref` | off | Sanity-check the 106 bit reference against a host FP128 one and report `ref-diff`. |
 
@@ -85,6 +85,8 @@ Performance
 
 `Performance` compares the native and emulated runs. `time` is the timed call in milliseconds after `--warmups` untimed calls; `memory` is the peak device memory in use during the run, sampled by polling free memory, so a workspace allocated and freed inside one call may be missed; `energy` is read from the on-board counter, NVML on NVIDIA and ROCm SMI on AMD, divided by the number of calls. All three native columns read `n/a` when the native `dgemm` emulated.
 
+**The run must be placed on the node's first physical GPU.** The binary always uses GPU 0 and always reads the energy counter of SMI device 0. This matters because `ROCR_VISIBLE_DEVICES` and `CUDA_VISIBLE_DEVICES` renumber only what the runtime exposes, while ROCm SMI and NVML enumerate the node's physical GPUs and ignore those variables. Pointing the runtime at any other GPU therefore leaves the timing and memory columns correct but silently attributes `energy` to a different, probably idle, GPU. Set `ROCR_VISIBLE_DEVICES=0` (or `CUDA_VISIBLE_DEVICES=0`). As a sanity check, dividing `energy` by `time` should give a power draw much larger than idle.
+
 `--no-106bit-ref` skips the reference altogether, leaving only the `emulated vs native` row. It is a full double-double `gemm`, so on large problems it costs far more than the two `dgemm` calls being measured.
 ```
 ./gemm_test --no-106bit-ref ...
@@ -107,16 +109,18 @@ module load craype-arm-grace
 make BACKEND=cuda CUDA_PATH=/opt/nvidia/hpc_sdk/Linux_aarch64/26.3 GPU_ARCH=90 HAVE_CUBLAS_OZAKI1=1
 ```
 
-cuBLAS turns FP64 emulation on and off through the environment variable `CUBLAS_EMULATE_DOUBLE_PRECISION`, and the binary sets it based on `--method`: `1` for `cublas-ozaki1` and `0` for everything else, so it never has to be set by hand. The two runs below are therefore the pair to compare, same problem, emulation off then on for NVIDIA GPUs. `~/cudevmap.sh` is a bash wrapper script that sets CPU-GPU affinity, binding each rank to the CPU cores closest to the GPU it uses.
+cuBLAS turns FP64 emulation on and off through the environment variable `CUBLAS_EMULATE_DOUBLE_PRECISION`, and the binary sets it based on `--method`: `1` for `cublas-ozaki1` and `0` for everything else, so it never has to be set by hand. The two runs below are therefore the pair to compare, same problem, emulation off then on for NVIDIA GPUs. 
 
 A: guaranteed-native baseline, `CUBLAS_EMULATE_DOUBLE_PRECISION=0`:
 ```
-~/cudevmap.sh ./gemm_test --method=native --m=10240 --n=10240 --k=10240 --phi=4.0
+export CUDA_VISIBLE_DEVICES=0
+numactl --cpunodebind=0 --membind=0 ./gemm_test --method=native --m=10240 --n=10240 --k=10240 --phi=4.0
 ```
 
 B: the emulated run, `CUBLAS_EMULATE_DOUBLE_PRECISION=1`:
 ```
-~/cudevmap.sh ./gemm_test --method=cublas-ozaki1 --m=10240 --n=10240 --k=10240 --phi=4.0 --splits=10
+export CUDA_VISIBLE_DEVICES=0
+numactl --cpunodebind=0 --membind=0 ./gemm_test --method=cublas-ozaki1 --m=10240 --n=10240 --k=10240 --phi=4.0 --splits=10
 ```
 
 ### Pinoak (AMD MI250X, `gfx90a`)
@@ -131,7 +135,9 @@ export HIP_PLATFORM=amd
 make -j BACKEND=hip HIP_PATH=/opt/rocm-7.2.0 GPU_ARCH=gfx90a HAVE_GEMMUL8=1 HAVE_OZABLAS=1
 ```
 
-`~/rocrmap.sh` is the ROCm equivalent bash script for CPU-GPU affinity:
+ Pin GPU 0 and bind to its NUMA node:
 ```
-~/rocrmap.sh ./gemm_test --method=ozablas-ozaki1 --m=10240 --n=10240 --k=10240 --phi=4.0 --splits=10
+export ROCR_VISIBLE_DEVICES=0
+numactl --cpunodebind=3 --membind=3 ./gemm_test --method=ozablas-ozaki1 --m=10240 --n=10240 --k=10240 --phi=4.0 --splits=10
 ```
+GPU 0 sits on NUMA node 3 on this node.

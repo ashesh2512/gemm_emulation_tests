@@ -18,23 +18,25 @@ struct RunResult {
 // The first call pays for lazy module loading, so only the last one is timed.
 // Memory is polled rather than snapshotted because a workspace allocated and
 // freed inside a single call would be invisible to a before/after pair.
-RunResult measure(Method method, hipblasHandle_t handle, const Problem &p, int warmups,
-                  int device) {
+RunResult measure(Method method, hipblasHandle_t handle, const Problem &p, int warmups) {
   // hipMemGetInfo needs both out-pointers, but only the device wide total is used.
   size_t free_bytes = 0, total_bytes = 0;
   HIP_CHECK(hipMemGetInfo(&free_bytes, &total_bytes));
 
   MemoryHighWaterMonitor mem;
-  mem.start(device);
+  mem.start(0);
 
   EnergyMonitor energy;
-  energy.start(device);
 
   hipEvent_t t0, t1;
   hipEventCreate(&t0);
   hipEventCreate(&t1);
 
+  // Drained before the window opens so lazy module loading stays out of the energy count.
   for (int i = 0; i < warmups; ++i) gemm_run(method, handle, p);
+  HIP_CHECK(hipDeviceSynchronize());
+
+  energy.start(0);
 
   hipEventRecord(t0, 0);
   gemm_run(method, handle, p);
@@ -46,9 +48,12 @@ RunResult measure(Method method, hipblasHandle_t handle, const Problem &p, int w
   hipEventDestroy(t0);
   hipEventDestroy(t1);
 
-  r.joules = energy.stop() / (warmups+1);
+  // One call can be shorter than the SMI counter tick, so short problems top the window up.
+  int iters = 1;
+  for (; r.ms > 0.0f && iters * r.ms < 200.0; ++iters) gemm_run(method, handle, p);
+  HIP_CHECK(hipDeviceSynchronize());
 
-  hipDeviceSynchronize();
+  r.joules = energy.stop() / iters;
   // Least free memory seen is most memory in use, so the peak inverts the sample.
   r.peak_bytes = total_bytes - mem.stop();
 
@@ -68,7 +73,6 @@ int main(int argc, char **argv) try {
   p.m = 1024; p.n = 1024; p.k = 1024;
   double phi = 1.0;
   int warmups = 2;
-  int device = 0;
   p.num_moduli = 2;
   p.num_splits = 2;
 
@@ -84,7 +88,6 @@ int main(int argc, char **argv) try {
     else if (strncmp(argv[i], "--moduli=", 9) == 0) p.num_moduli = atoi(argv[i] + 9);
     else if (strncmp(argv[i], "--splits=", 9) == 0) p.num_splits = atoi(argv[i] + 9);
     else if (strncmp(argv[i], "--warmups=", 10) == 0) warmups = atoi(argv[i] + 10);
-    else if (strncmp(argv[i], "--device=", 9) == 0) device = atoi(argv[i] + 9);
     else if (strcmp(argv[i], "--auto-mantissa") == 0) p.auto_mantissa = true;
     else if (strcmp(argv[i], "--no-106bit-ref") == 0) use_ref = false;
     else if (strcmp(argv[i], "--verify-ref") == 0) verify_ref = true;
@@ -98,7 +101,6 @@ int main(int argc, char **argv) try {
   if (p.m <= 0 || p.n <= 0 || p.k <= 0)
     throw std::invalid_argument("m, n and k must be positive");
   if (warmups < 0) throw std::invalid_argument("warmups cannot be negative");
-  if (device < 0) throw std::invalid_argument("device cannot be negative");
   if (verify_ref && !use_ref)
     throw std::invalid_argument("--verify-ref checks the 106 bit reference, so it "
                                 "cannot be used with --no-106bit-ref");
@@ -107,7 +109,8 @@ int main(int argc, char **argv) try {
 
   set_fp64_emulation_gate(method == Method::CublasOzaki1);
 
-  HIP_CHECK(hipSetDevice(device));
+  // device is hard coded
+  HIP_CHECK(hipSetDevice(0));
 
   p.lda = p.m; p.ldb = p.k; p.ldc = p.m;
 
@@ -130,7 +133,11 @@ int main(int argc, char **argv) try {
   fill_random(A, len_a, phi, 7774);
   fill_random(B, len_b, phi, 4777);
 
-  if (use_ref) gemm_ref_gpu(p.m, p.n, p.k, A, B, C_exact);
+  if (use_ref) {
+    gemm_ref_gpu(p.m, p.n, p.k, A, B, C_exact);
+    // Left running, this kernel would land inside the first energy and memory window.
+    HIP_CHECK(hipDeviceSynchronize());
+  }
 
   // Off by default: the host reference costs two transfers plus an FP128 gemm.
   double verify_norm = 0.0, verify_max = 0.0;
@@ -151,17 +158,17 @@ int main(int argc, char **argv) try {
   }
 
   p.A = A; p.B = B; p.C = C_native;
-  const RunResult native = measure(Method::Native, handle, p, warmups, device);
+  const RunResult native = measure(Method::Native, handle, p, warmups);
 
   // Only when the vendor dgemm emulated is its result not FP64, so only then is
   // it replaced by a hand written FP64 kernel for the error table.
   if (native.mantissa_bits > -1) {
     gemm_fp64_gpu(p.m, p.n, p.k, A, B, C_native);
-    hipDeviceSynchronize();
+    HIP_CHECK(hipDeviceSynchronize());
   }
 
   p.C = C;
-  const RunResult emulated = measure(method, handle, p, warmups, device);
+  const RunResult emulated = measure(method, handle, p, warmups);
 
   printf("Run\n");
   printf("  method            : %s\n", method_name(method));
